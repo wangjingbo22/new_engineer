@@ -1,0 +1,1 @@
+sed -i 's/while(HAL_CAN_GetTxMailboxesFreeLevel(hcan) == 0);/uint32_t wait_timeout = 0xFFFF;\n\t\twhile(HAL_CAN_GetTxMailboxesFreeLevel(hcan) == 0 \&\& wait_timeout > 0) wait_timeout--;/g' User/bsp_can.c
