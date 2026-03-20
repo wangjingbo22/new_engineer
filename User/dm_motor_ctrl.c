@@ -25,6 +25,21 @@ void dm_motor_init(void)
 	memset(&motor[Motor5], 0, sizeof(motor[Motor5]));
 	memset(&motor[Motor6], 0, sizeof(motor[Motor6]));
 
+	// Motor1 初始化 (底部yaw轴 DM4340 电机)
+	motor[Motor1].id = 0x01;			// 电机ID设置为0x01
+	motor[Motor1].mst_id = 0x11;		// Master ID设置为0x11
+	motor[Motor1].tmp.read_flag = 1;
+	motor[Motor1].ctrl.mode 	= mit_mode;		// 使用MIT模式
+	motor[Motor1].ctrl.pos_set 	= 0.0f;
+	motor[Motor1].ctrl.vel_set 	= 0.0f;
+	motor[Motor1].ctrl.kp_set 	= 50.0f;
+	motor[Motor1].ctrl.kd_set 	= 3.0f;
+	motor[Motor1].ctrl.tor_set 	= 0.0f;
+	motor[Motor1].ctrl.cur_set 	= 0.0f;
+	motor[Motor1].tmp.PMAX		= 12.5f;
+	motor[Motor1].tmp.VMAX		= 30.0f;
+	motor[Motor1].tmp.TMAX		= 28.0f;
+
 	// Motor2 初始化
 	motor[Motor2].id = 0x02;			// 电机ID设置为0x02
 	motor[Motor2].mst_id = 0x12;		// Master ID设置为0x12
@@ -216,6 +231,10 @@ void can1_rx_callback(void)
 	canx_receive(&hcan1, &rec_id, rx_data);
 	switch (rec_id)
 	{
+		case 0x11: // Motor 1 Feedback (Master ID 0x11) - 底部yaw DM4340
+			dm_motor_fbdata(&motor[Motor1], rx_data);
+			receive_motor_data(&motor[Motor1], rx_data);
+			break;
  		case 0x12: // Motor 2 Feedback (Master ID 0x12)
 			dm_motor_fbdata(&motor[Motor2], rx_data); 
 			receive_motor_data(&motor[Motor2], rx_data); 

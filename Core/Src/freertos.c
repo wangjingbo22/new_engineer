@@ -142,7 +142,7 @@ void StartDefaultTask(void *argument)
   // Enable Motors (ID 2, 3 and 4 mapped to array index Motor2, Motor3 and Motor4)
   for(int i = 0; i < num; i++)
   {
-      if (motor[i].id == 2 || motor[i].id == 3 || motor[i].id == 4)
+      if (motor[i].id == 1 || motor[i].id == 2 || motor[i].id == 3 || motor[i].id == 4)
       {
           dm_motor_enable(&hcan1, &motor[i]);
           osDelay(5);
@@ -151,11 +151,14 @@ void StartDefaultTask(void *argument)
 
   // Initial Control Parameters
   // 此处根据不同关节负载解耦 Kp/Kd
+  float kp_m1 = 300.0f;    // 底部yaw轴 DM4340
+  float kd_m1 = 4.0f;
+
   float kp_m2 = 450.0f;    // 提高刚度，配合积分项强力锁死
-  float kd_m2 = 5.0f;      
-  
+  float kd_m2 = 5.0f;
+
   float kp_m3 = 350.0f;    // 提高小臂刚度
-  float kd_m3 = 4.0f;      
+  float kd_m3 = 4.0f;
 
   float kp_m4 = 100.0f;     // 末端夹爪 4310
   float kd_m4 = 3.0f;
@@ -166,7 +169,7 @@ void StartDefaultTask(void *argument)
     while (!init_flag && timeout_cnt < 200) {
         init_flag = true;
         for (int i = 0; i < num; i++) {
-            if (motor[i].id == 2 || motor[i].id == 3 || motor[i].id == 4) {
+            if (motor[i].id == 1 || motor[i].id == 2 || motor[i].id == 3 || motor[i].id == 4) {
                 if (motor[i].para.state == 0) { // 等待所有生效电机收到至少一次反馈
                     init_flag = false;
                 }
@@ -176,12 +179,14 @@ void StartDefaultTask(void *argument)
         timeout_cnt++;
     }
     osDelay(100);
+  float pos_ref_m1 = 0.0f;
   float pos_ref_m2 = 0.0f;
   float pos_ref_m3 = 0.0f;
   float pos_ref_m4 = 0.0f;
 
   for(int i = 0; i < num; i++)
   {
+    if (motor[i].id == 1) pos_ref_m1 = motor[i].para.pos;
     if (motor[i].id == 2) pos_ref_m2 = motor[i].para.pos;
     if (motor[i].id == 3) pos_ref_m3 = motor[i].para.pos;
     if (motor[i].id == 4) pos_ref_m4 = motor[i].para.pos;
@@ -189,6 +194,7 @@ void StartDefaultTask(void *argument)
 
    osDelay(500);
 
+    float smooth_vel_m1 = 0.0f;
     float smooth_vel_m2 = 0.0f;
     float smooth_vel_m3 = 0.0f;
     float smooth_vel_m4 = 0.0f;
@@ -201,17 +207,20 @@ void StartDefaultTask(void *argument)
     /* Infinite loop */
     for(;;)
     {
-    // --- 1. 获取两自由度连杆电机当前角度 ---
+    // --- 1. 获取电机当前角度 ---
+    float pos_m1 = 0.0f;
     float pos_m2 = 0.0f;
     float pos_m3 = 0.0f;
     float pos_m4 = 0.0f;
     for(int i = 0; i < num; i++)
     {
+      if (motor[i].id == 1) pos_m1 = motor[i].para.pos;
       if (motor[i].id == 2) pos_m2 = motor[i].para.pos;
       if (motor[i].id == 3) pos_m3 = motor[i].para.pos;
       if (motor[i].id == 4) pos_m4 = motor[i].para.pos;
     }
 
+    float target_vel_m1 = 0.0f;
     float target_vel_m2 = 0.0f;
     float target_vel_m3 = 0.0f;
     float target_vel_m4 = 0.0f;
@@ -238,28 +247,35 @@ void StartDefaultTask(void *argument)
       {
         if (!(last_s0 == 2 && last_s1 == 2)) {
             for(int i = 0; i < num; i++) {
+                if (motor[i].id == 1) pos_ref_m1 = motor[i].para.pos;
                 if (motor[i].id == 4) pos_ref_m4 = motor[i].para.pos;
             }
         }
-        
+
+      float ch0_val = (float)rc.ch[0];
       float ch3_val = (float)rc.ch[3];
+      if (fabs(ch0_val) < 20.0f) ch0_val = 0.0f;
       if (fabs(ch3_val) < 20.0f) ch3_val = 0.0f;
 
-      target_vel_m4 = ch3_val * 0.05f; 
+      target_vel_m1 = ch0_val * 0.02f;  // 底部yaw
+      target_vel_m4 = ch3_val * 0.05f;  // 夹爪
     }
 
     // --- 一阶低通滤波：彻底打平 14ms 的遥控器信号阶跃 ---
     // 0.02f 的系数能在 100ms 内平滑完成响应，让运动彻底告别卡顿
+    smooth_vel_m1 += 0.02f * (target_vel_m1 - smooth_vel_m1);
     smooth_vel_m2 += 0.02f * (target_vel_m2 - smooth_vel_m2);
     smooth_vel_m3 += 0.02f * (target_vel_m3 - smooth_vel_m3);
     smooth_vel_m4 += 0.02f * (target_vel_m4 - smooth_vel_m4);
 
     // 完全归中时严格清0，防止微小蠕动
+    float vel_out_m1 = (fabs(smooth_vel_m1) < 0.01f) ? 0.0f : smooth_vel_m1;
     float vel_out_m2 = (fabs(smooth_vel_m2) < 0.01f) ? 0.0f : smooth_vel_m2;
     float vel_out_m3 = (fabs(smooth_vel_m3) < 0.01f) ? 0.0f : smooth_vel_m3;
     float vel_out_m4 = (fabs(smooth_vel_m4) < 0.01f) ? 0.0f : smooth_vel_m4;
 
     // 更新位置 (每 2ms = 0.002s 执行一次)
+    pos_ref_m1 += vel_out_m1 * 0.002f;
     pos_ref_m2 += vel_out_m2 * 0.002f;
     pos_ref_m3 += vel_out_m3 * 0.002f;
     pos_ref_m4 += vel_out_m4 * 0.002f;
@@ -288,7 +304,11 @@ void StartDefaultTask(void *argument)
     // --- 2. 指令下发 ---
     for(int i = 0; i < num; i++)
     {
-      if (motor[i].id == 2) 
+      if (motor[i].id == 1)
+      {
+        mit_ctrl(&hcan1, &motor[i], motor[i].id, pos_ref_m1, vel_out_m1, kp_m1, kd_m1, 0.0f);
+      }
+      else if (motor[i].id == 2)
       {
         mit_ctrl(&hcan1, &motor[i], motor[i].id, pos_ref_m2, vel_out_m2, kp_m2, kd_m2, tor_ff_m2);
       }
