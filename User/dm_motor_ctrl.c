@@ -26,8 +26,8 @@ void dm_motor_init(void)
 	memset(&motor[Motor6], 0, sizeof(motor[Motor6]));
 
 	// Motor1 初始化 (底部yaw轴 DM4340 电机)
-	motor[Motor1].id = 0x01;			// 电机ID设置为0x01
-	motor[Motor1].mst_id = 0x11;		// Master ID设置为0x11
+	motor[Motor1].id = 0x01;			// 底部yaw DM4340
+	motor[Motor1].mst_id = 0x11;
 	motor[Motor1].tmp.read_flag = 1;
 	motor[Motor1].ctrl.mode 	= mit_mode;		// 使用MIT模式
 	motor[Motor1].ctrl.pos_set 	= 0.0f;
@@ -41,8 +41,8 @@ void dm_motor_init(void)
 	motor[Motor1].tmp.TMAX		= 28.0f;
 
 	// Motor2 初始化
-	motor[Motor2].id = 0x02;			// 电机ID设置为0x02
-	motor[Motor2].mst_id = 0x12;		// Master ID设置为0x12
+	motor[Motor2].id = 0x04;			// 大臂 8009P
+	motor[Motor2].mst_id = 0x14;
 	motor[Motor2].tmp.read_flag = 1;
 	motor[Motor2].ctrl.mode 	= mit_mode;		// 使用MIT模式
 	motor[Motor2].ctrl.pos_set 	= 0.0f;			// 初始目标位置
@@ -56,8 +56,8 @@ void dm_motor_init(void)
 	motor[Motor2].tmp.TMAX		= 54.0f;		// 扭矩映射范围
 
 	// Motor3 初始化
-	motor[Motor3].id = 0x03;			// 电机ID设置为0x03
-	motor[Motor3].mst_id = 0x13;		// Master ID设置为0x13
+	motor[Motor3].id = 0x07;			// 小臂 8009P
+	motor[Motor3].mst_id = 0x17;
 	motor[Motor3].tmp.read_flag = 1;
 	motor[Motor3].ctrl.mode 	= mit_mode;		// 使用MIT模式
 	motor[Motor3].ctrl.pos_set 	= 0.0f;			// 初始目标位置
@@ -69,8 +69,8 @@ void dm_motor_init(void)
 	motor[Motor3].tmp.VMAX		= 45.0f;
 	motor[Motor3].tmp.TMAX		= 54.0f;
 	// Motor4 初始化 (末端夹爪 4310 电机)
-	motor[Motor4].id = 0x04;			// 电机ID设置为0x04
-	motor[Motor4].mst_id = 0x14;		// Master ID设置为0x14
+	motor[Motor4].id = 0x0A;			// 电机ID设置为0x0A（拉远避免CAN ID串扰）
+	motor[Motor4].mst_id = 0x1A;		// Master ID设置为0x1A
 	motor[Motor4].tmp.read_flag = 1;
 	motor[Motor4].ctrl.mode 	= mit_mode;		// 使用MIT模式
 	motor[Motor4].ctrl.pos_set 	= 0.0f;			
@@ -231,19 +231,19 @@ void can1_rx_callback(void)
 	canx_receive(&hcan1, &rec_id, rx_data);
 	switch (rec_id)
 	{
-		case 0x11: // Motor 1 Feedback (Master ID 0x11) - 底部yaw DM4340
+		case 0x11: // Motor 1 - 底部yaw DM4340 (ESC_ID=0x01)
 			dm_motor_fbdata(&motor[Motor1], rx_data);
 			receive_motor_data(&motor[Motor1], rx_data);
 			break;
- 		case 0x12: // Motor 2 Feedback (Master ID 0x12)
-			dm_motor_fbdata(&motor[Motor2], rx_data); 
-			receive_motor_data(&motor[Motor2], rx_data); 
+		case 0x14: // Motor 2 - 大臂 8009P (ESC_ID=0x04)
+			dm_motor_fbdata(&motor[Motor2], rx_data);
+			receive_motor_data(&motor[Motor2], rx_data);
 			break;
-		case 0x13: // Motor 3 Feedback (Master ID 0x13)
+		case 0x17: // Motor 3 - 小臂 8009P (ESC_ID=0x07)
 			dm_motor_fbdata(&motor[Motor3], rx_data);
 			receive_motor_data(&motor[Motor3], rx_data);
 			break;
-		case 0x14: // Motor 4 Feedback (Master ID 0x14) - 夹爪4310
+		case 0x1A: // Motor 4 - 夹爪 DM4310 (ESC_ID=0x0A)
 			dm_motor_fbdata(&motor[Motor4], rx_data);
 			receive_motor_data(&motor[Motor4], rx_data);
 			break;
