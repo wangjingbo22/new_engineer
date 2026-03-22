@@ -139,14 +139,20 @@ void StartDefaultTask(void *argument)
   dm_motor_init();
   osDelay(100);
 
-  // Enable Motors (ID 2, 3 and 4 mapped to array index Motor2, Motor3 and Motor4)
-  for(int i = 0; i < num; i++)
+  // Enable Motors: 先清错再使能，间隔拉大防丢帧，失败重试
+  for(int retry = 0; retry < 3; retry++)
   {
-      if (motor[i].id == 1 || motor[i].id == 2 || motor[i].id == 3 || motor[i].id == 4)
+      for(int i = 0; i < num; i++)
       {
-          dm_motor_enable(&hcan1, &motor[i]);
-          osDelay(5);
+          if (motor[i].id == 1 || motor[i].id == 2 || motor[i].id == 3 || motor[i].id == 4)
+          {
+              dm_motor_clear_err(&hcan1, &motor[i]);
+              osDelay(50);
+              dm_motor_enable(&hcan1, &motor[i]);
+              osDelay(50);
+          }
       }
+      osDelay(100);
   }
 
   // Initial Control Parameters

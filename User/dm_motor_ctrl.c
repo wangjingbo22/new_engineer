@@ -67,7 +67,7 @@ void dm_motor_init(void)
 	motor[Motor3].ctrl.tor_set 	= 0.0f;			// 扭矩前馈
 	motor[Motor3].tmp.PMAX		= 12.5f;
 	motor[Motor3].tmp.VMAX		= 45.0f;
-	motor[Motor3].tmp.TMAX		= 18.0f;
+	motor[Motor3].tmp.TMAX		= 54.0f;
 	// Motor4 初始化 (末端夹爪 4310 电机)
 	motor[Motor4].id = 0x04;			// 电机ID设置为0x04
 	motor[Motor4].mst_id = 0x14;		// Master ID设置为0x14
