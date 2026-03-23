@@ -29,7 +29,7 @@ void dm_motor_init(void)
 	motor[Motor1].id = 0x01;			// 底部yaw DM4340
 	motor[Motor1].mst_id = 0x11;
 	motor[Motor1].tmp.read_flag = 1;
-	motor[Motor1].ctrl.mode 	= psi_mode;		// PSI位置速度混控
+	motor[Motor1].ctrl.mode 	= mit_mode;		// MIT模式
 	motor[Motor1].ctrl.pos_set 	= 0.0f;
 	motor[Motor1].ctrl.vel_set 	= 0.0f;
 	motor[Motor1].ctrl.kp_set 	= 50.0f;
@@ -44,7 +44,7 @@ void dm_motor_init(void)
 	motor[Motor2].id = 0x04;			// 大臂 8009P
 	motor[Motor2].mst_id = 0x14;
 	motor[Motor2].tmp.read_flag = 1;
-	motor[Motor2].ctrl.mode 	= psi_mode;		// PSI位置速度混控
+	motor[Motor2].ctrl.mode 	= mit_mode;		// MIT模式
 	motor[Motor2].ctrl.pos_set 	= 0.0f;			// 初始目标位置
 	motor[Motor2].ctrl.vel_set 	= 0.0f;			// 速度前馈
 	motor[Motor2].ctrl.kp_set 	= 50.0f;		// 位置增益Kp=50
@@ -59,7 +59,7 @@ void dm_motor_init(void)
 	motor[Motor3].id = 0x07;			// 小臂 8009P
 	motor[Motor3].mst_id = 0x17;
 	motor[Motor3].tmp.read_flag = 1;
-	motor[Motor3].ctrl.mode 	= psi_mode;		// PSI位置速度混控
+	motor[Motor3].ctrl.mode 	= mit_mode;		// MIT模式
 	motor[Motor3].ctrl.pos_set 	= 0.0f;			// 初始目标位置
 	motor[Motor3].ctrl.vel_set 	= 0.0f;			// 速度前馈
 	motor[Motor3].ctrl.kp_set 	= 50.0f;		// 位置增益Kp=50

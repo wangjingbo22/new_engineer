@@ -341,13 +341,13 @@ __weak void Gimbal_Task(void *argument)
       osDelay(100);
   }
 
-  // === PSI 模式参数 (Motor 1/2/3) ===
-  float psi_max_vel_m1 = 3.0f;    // yaw 最大速度 rad/s
-  float psi_max_cur_m1 = 3.0f;    // yaw 最大电流 A
-  float psi_max_vel_m2 = 2.0f;    // 大臂 最大速度
-  float psi_max_cur_m2 = 5.0f;    // 大臂 最大电流
-  float psi_max_vel_m3 = 2.0f;    // 小臂 最大速度
-  float psi_max_cur_m3 = 4.0f;    // 小臂 最大电流
+  // === Motor 1/2/3 MIT PD 参数 ===
+  float kp_m1 = 300.0f;    // 底部yaw DM4340
+  float kd_m1 = 4.0f;
+  float kp_m2 = 450.0f;    // 大臂 8009P
+  float kd_m2 = 5.0f;
+  float kp_m3 = 350.0f;    // 小臂 8009P
+  float kd_m3 = 4.0f;
 
   // === 夹爪参数 (Motor 4, MIT 模式) ===
   #define GRIPPER_HOLD    0
@@ -383,10 +383,10 @@ __weak void Gimbal_Task(void *argument)
   float pos_ref_m3 = motor[Motor3].para.pos;
   float gripper_hold_pos = motor[Motor4].para.pos;
 
-  // TIM8 已在 main.c 初始化，写入初始保持指令后启动
-  motor_cmd[0] = (motor_cmd_t){ pos_ref_m1, psi_max_vel_m1, 0, 0, psi_max_cur_m1 };
-  motor_cmd[1] = (motor_cmd_t){ pos_ref_m2, psi_max_vel_m2, 0, 0, psi_max_cur_m2 };
-  motor_cmd[2] = (motor_cmd_t){ pos_ref_m3, psi_max_vel_m3, 0, 0, psi_max_cur_m3 };
+  // TIM8 已在 main.c 初始化，写入初始 MIT 保持指令后启动
+  motor_cmd[0] = (motor_cmd_t){ pos_ref_m1, 0, kp_m1, kd_m1, 0 };
+  motor_cmd[1] = (motor_cmd_t){ pos_ref_m2, 0, kp_m2, kd_m2, 0 };
+  motor_cmd[2] = (motor_cmd_t){ pos_ref_m3, 0, kp_m3, kd_m3, 0 };
   motor_cmd[3] = (motor_cmd_t){ gripper_hold_pos, 0, gripper_hold_kp, gripper_hold_kd, 0 };
   motor_send_tim_start();
 
@@ -395,6 +395,8 @@ __weak void Gimbal_Task(void *argument)
   float smooth_vel_m1 = 0.0f;
   float smooth_vel_m2 = 0.0f;
   float smooth_vel_m3 = 0.0f;
+  float int_m2 = 0.0f;
+  float int_m3 = 0.0f;
 
   uint8_t last_s0 = 0;
   uint8_t gripper_state = GRIPPER_HOLD;
@@ -482,10 +484,24 @@ __weak void Gimbal_Task(void *argument)
     pos_ref_m2 += vel_out_m2 * 0.004f;
     pos_ref_m3 += vel_out_m3 * 0.004f;
 
-    // --- 4. 写入共享指令（TIM8 ISR 每250μs读取并发送）---
-    motor_cmd[0] = (motor_cmd_t){ pos_ref_m1, psi_max_vel_m1, 0, 0, psi_max_cur_m1 };
-    motor_cmd[1] = (motor_cmd_t){ pos_ref_m2, psi_max_vel_m2, 0, 0, psi_max_cur_m2 };
-    motor_cmd[2] = (motor_cmd_t){ pos_ref_m3, psi_max_vel_m3, 0, 0, psi_max_cur_m3 };
+    // --- 4. 重力补偿 (Motor 2/3) ---
+    float pos_m2 = motor[Motor2].para.pos;
+    float pos_m3 = motor[Motor3].para.pos;
+    float err_m2 = pos_ref_m2 - pos_m2;
+    float err_m3 = pos_ref_m3 - pos_m3;
+    float gi_m2 = (fabs(vel_out_m2) < 0.02f) ? 1.0f : 0.2f;
+    float gi_m3 = (fabs(vel_out_m3) < 0.02f) ? 1.0f : 0.2f;
+    int_m2 += err_m2 * gi_m2;
+    int_m3 += err_m3 * gi_m3;
+    if(int_m2 >  25.0f) int_m2 =  25.0f;
+    if(int_m2 < -25.0f) int_m2 = -25.0f;
+    if(int_m3 >  20.0f) int_m3 =  20.0f;
+    if(int_m3 < -20.0f) int_m3 = -20.0f;
+
+    // --- 5. 写入共享指令（TIM8 ISR 每250μs读取并发送）---
+    motor_cmd[0] = (motor_cmd_t){ pos_ref_m1, vel_out_m1, kp_m1, kd_m1, 0.0f };
+    motor_cmd[1] = (motor_cmd_t){ pos_ref_m2, vel_out_m2, kp_m2, kd_m2, int_m2 };
+    motor_cmd[2] = (motor_cmd_t){ pos_ref_m3, vel_out_m3, kp_m3, kd_m3, int_m3 };
 
     if (gripper_state == GRIPPER_CLAMP) {
         motor_cmd[3] = (motor_cmd_t){ 0, gripper_clamp_vel, 0, gripper_kd, 0 };
