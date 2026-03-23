@@ -30,6 +30,7 @@
 
 /* Private includes ----------------------------------------------------------*/
 /* USER CODE BEGIN Includes */
+#include "motor_send_tim.h"
 
 /* USER CODE END Includes */
 
@@ -108,7 +109,7 @@ int main(void)
   MX_CRC_Init();
   MX_RNG_Init();
   /* USER CODE BEGIN 2 */
-
+  motor_send_tim_init();  // 配置 TIM8 为 250μs 周期，暂不启动，等电机使能后再 start
   /* USER CODE END 2 */
 
   /* Init scheduler */
@@ -118,7 +119,7 @@ int main(void)
   /* Start scheduler */
   osKernelStart();
 
-  /* We should never get here as contro                                                                                                                                                                 l is now taken by the scheduler */
+  /* We should never get here as control is now taken by the scheduler */
 
   /* Infinite loop */
   /* USER CODE BEGIN WHILE */
