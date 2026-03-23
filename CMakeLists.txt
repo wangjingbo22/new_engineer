@@ -49,6 +49,7 @@ target_sources(${CMAKE_PROJECT_NAME} PRIVATE
     User/dm_motor_ctrl.c
     User/dm_motor_drv.c
     User/remote.c
+    User/motor_send_tim.c
 )
 
 # Add include paths

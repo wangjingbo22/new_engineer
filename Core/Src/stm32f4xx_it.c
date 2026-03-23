@@ -47,6 +47,7 @@
 /* Private function prototypes -----------------------------------------------*/
 /* USER CODE BEGIN PFP */
 #include "remote.h"
+#include "motor_send_tim.h"
 void rx_callback(void);
 /* USER CODE END PFP */
 
@@ -348,6 +349,11 @@ void USART6_IRQHandler(void)
 }
 
 /* USER CODE BEGIN 1 */
+void TIM2_IRQHandler(void)
+{
+    motor_send_tim_isr();
+}
+
 void rx_callback(void)
 {
   __HAL_DMA_DISABLE(huart3.hdmarx);

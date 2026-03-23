@@ -30,6 +30,7 @@
 #include "can.h"
 #include "bsp_can.h"
 #include "remote.h"
+#include "motor_send_tim.h"
 #include "math.h"
 #include <stdbool.h>
 /* USER CODE END Includes */
@@ -167,12 +168,12 @@ void StartDefaultTask(void *argument)
   #define GRIPPER_HOLD    0
   #define GRIPPER_CLAMP   1
   #define GRIPPER_RELEASE 2
-  float gripper_clamp_vel   =  2.0f;   // 夹紧速度 rad/s
-  float gripper_release_vel = -2.0f;   // 松开速度 rad/s
-  float gripper_kd          =  1.0f;   // 夹爪运动阻尼
-  float gripper_hold_kp     = 50.0f;   // 夹爪保持刚度
-  float gripper_hold_kd     =  2.0f;   // 夹爪保持阻尼
-  float gripper_tor_limit   =  3.0f;   // 过流保护阈值 Nm
+  float gripper_clamp_vel   =  2.0f;
+  float gripper_release_vel = -2.0f;
+  float gripper_kd          =  1.0f;
+  float gripper_hold_kp     = 50.0f;
+  float gripper_hold_kd     =  2.0f;
+  float gripper_tor_limit   =  3.0f;
 
   // 等待电机回传第一帧真实位置
   bool init_flag = false;
@@ -197,6 +198,14 @@ void StartDefaultTask(void *argument)
   float pos_ref_m3 = motor[Motor3].para.pos;
   float gripper_hold_pos = motor[Motor4].para.pos;
 
+  // 初始化 TIM2 250μs 定时发送，并写入初始保持指令
+  motor_cmd[0] = (motor_cmd_t){ pos_ref_m1, 0, kp_m1, kd_m1, 0 };
+  motor_cmd[1] = (motor_cmd_t){ pos_ref_m2, 0, kp_m2, kd_m2, 0 };
+  motor_cmd[2] = (motor_cmd_t){ pos_ref_m3, 0, kp_m3, kd_m3, 0 };
+  motor_cmd[3] = (motor_cmd_t){ gripper_hold_pos, 0, gripper_hold_kp, gripper_hold_kd, 0 };
+  motor_send_tim_init();
+  motor_send_tim_start();
+
   osDelay(500);
 
   float smooth_vel_m1 = 0.0f;
@@ -209,7 +218,7 @@ void StartDefaultTask(void *argument)
   uint8_t gripper_state = GRIPPER_HOLD;
   bool gripper_overcurrent = false;
 
-  /* Infinite loop */
+  // 主任务 ~250Hz：只算目标值，CAN 发送由 TIM2 ISR 均匀完成
   for(;;)
   {
     // --- 1. 获取电机当前状态 ---
@@ -226,12 +235,11 @@ void StartDefaultTask(void *argument)
     // --- 2. 模式分发 ---
     if (rc.s[0] == 1)
     {
-      // ===== S[0]=1: 大臂/小臂 位置积分控制 =====
       if (last_s0 != 1) {
-          pos_ref_m1 = pos_m1;  // 全量捕获，防止yaw漂移
+          pos_ref_m1 = pos_m1;
           pos_ref_m2 = pos_m2;
           pos_ref_m3 = pos_m3;
-          smooth_vel_m1 = 0.0f; // 清残余速度，防止切档后继续滑动
+          smooth_vel_m1 = 0.0f;
           smooth_vel_m2 = 0.0f;
           smooth_vel_m3 = 0.0f;
       }
@@ -240,15 +248,14 @@ void StartDefaultTask(void *argument)
       if (fabs(ch3_val) < 20.0f) ch3_val = 0.0f;
       if (fabs(ch1_val) < 20.0f) ch1_val = 0.0f;
 
-      target_vel_m2 = ch3_val * 0.005f;  // 缩小4倍，更精细
+      target_vel_m2 = ch3_val * 0.005f;
       target_vel_m3 = ch1_val * 0.005f;
     }
     else if (rc.s[0] == 2)
     {
-      // ===== S[0]=2: 底座Yaw + 夹爪 =====
       if (last_s0 != 2) {
           pos_ref_m1 = pos_m1;
-          pos_ref_m2 = pos_m2;  // 全量捕获
+          pos_ref_m2 = pos_m2;
           pos_ref_m3 = pos_m3;
           smooth_vel_m1 = 0.0f;
           smooth_vel_m2 = 0.0f;
@@ -256,31 +263,22 @@ void StartDefaultTask(void *argument)
       }
       float ch0_val = (float)rc.ch[0];
       if (fabs(ch0_val) < 20.0f) ch0_val = 0.0f;
-      target_vel_m1 = ch0_val * 0.008f;  // yaw 稍快一点
+      target_vel_m1 = ch0_val * 0.008f;
 
-      // --- 夹爪状态机 (S[1]控制) ---
+      // 夹爪状态机
       uint8_t desired_grip = GRIPPER_HOLD;
       if (rc.s[1] == 1)      desired_grip = GRIPPER_CLAMP;
       else if (rc.s[1] == 2) desired_grip = GRIPPER_RELEASE;
       else                    desired_grip = GRIPPER_HOLD;
 
-      // 过流锁定：触发后强制保持，直到用户回到S[1]=3
       if (gripper_overcurrent) {
-          if (desired_grip == GRIPPER_HOLD) {
-              gripper_overcurrent = false;
-          }
+          if (desired_grip == GRIPPER_HOLD) gripper_overcurrent = false;
           desired_grip = GRIPPER_HOLD;
       }
-
-      // 状态切换时捕获保持位置
       if (desired_grip != gripper_state) {
-          if (desired_grip == GRIPPER_HOLD) {
-              gripper_hold_pos = pos_m4;
-          }
+          if (desired_grip == GRIPPER_HOLD) gripper_hold_pos = pos_m4;
           gripper_state = desired_grip;
       }
-
-      // 过流检测
       if ((gripper_state == GRIPPER_CLAMP || gripper_state == GRIPPER_RELEASE) &&
           fabs(tor_m4) > gripper_tor_limit) {
           gripper_hold_pos = pos_m4;
@@ -290,7 +288,6 @@ void StartDefaultTask(void *argument)
     }
     else
     {
-      // ===== S[0]=3: 底盘（暂未实现），所有关节保持 =====
       if (last_s0 != 3) {
           pos_ref_m1 = pos_m1;
           pos_ref_m2 = pos_m2;
@@ -305,25 +302,24 @@ void StartDefaultTask(void *argument)
       }
     }
 
-    // --- 3. Motor 1/2/3 速度平滑 + 位置积分 ---
-    smooth_vel_m1 += 0.02f * (target_vel_m1 - smooth_vel_m1);
-    smooth_vel_m2 += 0.02f * (target_vel_m2 - smooth_vel_m2);
-    smooth_vel_m3 += 0.02f * (target_vel_m3 - smooth_vel_m3);
+    // --- 3. 速度平滑 + 位置积分 (4ms 周期) ---
+    smooth_vel_m1 += 0.04f * (target_vel_m1 - smooth_vel_m1);
+    smooth_vel_m2 += 0.04f * (target_vel_m2 - smooth_vel_m2);
+    smooth_vel_m3 += 0.04f * (target_vel_m3 - smooth_vel_m3);
 
     float vel_out_m1 = (fabs(smooth_vel_m1) < 0.01f) ? 0.0f : smooth_vel_m1;
     float vel_out_m2 = (fabs(smooth_vel_m2) < 0.01f) ? 0.0f : smooth_vel_m2;
     float vel_out_m3 = (fabs(smooth_vel_m3) < 0.01f) ? 0.0f : smooth_vel_m3;
 
-    pos_ref_m1 += vel_out_m1 * 0.002f;
-    pos_ref_m2 += vel_out_m2 * 0.002f;
-    pos_ref_m3 += vel_out_m3 * 0.002f;
+    pos_ref_m1 += vel_out_m1 * 0.004f;
+    pos_ref_m2 += vel_out_m2 * 0.004f;
+    pos_ref_m3 += vel_out_m3 * 0.004f;
 
-    // --- 4. 重力补偿 (Motor 2/3) ---
-    // 全程生效：停止时快速积分，运动时慢速积分保持抗重力底线
+    // --- 4. 重力补偿 (Motor 2/3, 增益x2补偿降频) ---
     float err_m2 = pos_ref_m2 - pos_m2;
     float err_m3 = pos_ref_m3 - pos_m3;
-    float gi_m2 = (fabs(vel_out_m2) < 0.02f) ? 0.5f : 0.1f;
-    float gi_m3 = (fabs(vel_out_m3) < 0.02f) ? 0.5f : 0.1f;
+    float gi_m2 = (fabs(vel_out_m2) < 0.02f) ? 1.0f : 0.2f;
+    float gi_m3 = (fabs(vel_out_m3) < 0.02f) ? 1.0f : 0.2f;
     int_m2 += err_m2 * gi_m2;
     int_m3 += err_m3 * gi_m3;
     if(int_m2 >  25.0f) int_m2 =  25.0f;
@@ -331,27 +327,21 @@ void StartDefaultTask(void *argument)
     if(int_m3 >  20.0f) int_m3 =  20.0f;
     if(int_m3 < -20.0f) int_m3 = -20.0f;
 
-    // --- 5. 指令下发 ---
-    mit_ctrl(&hcan1, &motor[Motor1], motor[Motor1].id,
-             pos_ref_m1, vel_out_m1, kp_m1, kd_m1, 0.0f);
-    mit_ctrl(&hcan1, &motor[Motor2], motor[Motor2].id,
-             pos_ref_m2, vel_out_m2, kp_m2, kd_m2, int_m2);
-    mit_ctrl(&hcan1, &motor[Motor3], motor[Motor3].id,
-             pos_ref_m3, vel_out_m3, kp_m3, kd_m3, int_m3);
+    // --- 5. 写入共享指令缓冲（TIM2 ISR 每250μs 读取并发送）---
+    motor_cmd[0] = (motor_cmd_t){ pos_ref_m1, vel_out_m1, kp_m1, kd_m1, 0.0f };
+    motor_cmd[1] = (motor_cmd_t){ pos_ref_m2, vel_out_m2, kp_m2, kd_m2, int_m2 };
+    motor_cmd[2] = (motor_cmd_t){ pos_ref_m3, vel_out_m3, kp_m3, kd_m3, int_m3 };
 
     if (gripper_state == GRIPPER_CLAMP) {
-        mit_ctrl(&hcan1, &motor[Motor4], motor[Motor4].id,
-                 0.0f, gripper_clamp_vel, 0.0f, gripper_kd, 0.0f);
+        motor_cmd[3] = (motor_cmd_t){ 0, gripper_clamp_vel, 0, gripper_kd, 0 };
     } else if (gripper_state == GRIPPER_RELEASE) {
-        mit_ctrl(&hcan1, &motor[Motor4], motor[Motor4].id,
-                 0.0f, gripper_release_vel, 0.0f, gripper_kd, 0.0f);
+        motor_cmd[3] = (motor_cmd_t){ 0, gripper_release_vel, 0, gripper_kd, 0 };
     } else {
-        mit_ctrl(&hcan1, &motor[Motor4], motor[Motor4].id,
-                 gripper_hold_pos, 0.0f, gripper_hold_kp, gripper_hold_kd, 0.0f);
+        motor_cmd[3] = (motor_cmd_t){ gripper_hold_pos, 0, gripper_hold_kp, gripper_hold_kd, 0 };
     }
 
     last_s0 = rc.s[0];
-    osDelay(2); // 500Hz
+    osDelay(4); // 250Hz 主任务，ISR 1kHz/电机
   }
   /* USER CODE END StartDefaultTask */
 }
