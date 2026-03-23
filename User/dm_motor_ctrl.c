@@ -1,5 +1,6 @@
 #include "dm_motor_drv.h"
 #include "dm_motor_ctrl.h"
+#include "chassis.h"
 #include "string.h"
 #include "stdbool.h"
 
@@ -250,4 +251,7 @@ void can1_rx_callback(void)
 	}
 }
 
-
+void can2_rx_callback(void)
+{
+	chassis_can2_callback();
+}

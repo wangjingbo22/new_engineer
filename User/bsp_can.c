@@ -4,22 +4,37 @@
 * @brief:      	can_bsp_init(void)
 * @param:       void
 * @retval:     	void
-* @details:    	CAN Ê¹ÄÜ
+* @details:    	CAN Ê¹ï¿½ï¿½
 ************************************************************************
 **/
 void bsp_can_init(void)
-{ 
+{
 	can_filter_init();
-	HAL_CAN_Start(&hcan1);   
+	HAL_CAN_Start(&hcan1);
+	HAL_CAN_ActivateNotification(&hcan1, CAN_IT_RX_FIFO0_MSG_PENDING);
 
-	HAL_CAN_ActivateNotification(&hcan1, CAN_IT_RX_FIFO0_MSG_PENDING);	
+	// CAN2 å¯åŠ¨ï¼ˆåº•ç›˜ 3508 ç”µæœºï¼‰
+	CAN_FilterTypeDef can2_filter;
+	can2_filter.FilterActivation = ENABLE;
+	can2_filter.FilterMode = CAN_FILTERMODE_IDMASK;
+	can2_filter.FilterScale = CAN_FILTERSCALE_32BIT;
+	can2_filter.FilterIdHigh = 0x0000;
+	can2_filter.FilterIdLow = 0x0000;
+	can2_filter.FilterMaskIdHigh = 0x0000;
+	can2_filter.FilterMaskIdLow = 0x0000;
+	can2_filter.FilterBank = 14;          // CAN2 æ»¤æ³¢å™¨ä»Ž bank 14 å¼€å§‹
+	can2_filter.FilterFIFOAssignment = CAN_RX_FIFO0;
+	can2_filter.SlaveStartFilterBank = 14;
+	HAL_CAN_ConfigFilter(&hcan2, &can2_filter);
+	HAL_CAN_Start(&hcan2);
+	HAL_CAN_ActivateNotification(&hcan2, CAN_IT_RX_FIFO0_MSG_PENDING);
 }
 /**
 ************************************************************************
 * @brief:      	can_filter_init(void)
 * @param:       void
 * @retval:     	void
-* @details:    	CANÂË²¨Æ÷³õÊ¼»¯
+* @details:    	CANï¿½Ë²ï¿½ï¿½ï¿½ï¿½ï¿½Ê¼ï¿½ï¿½
 ************************************************************************
 **/
 void can_filter_init(void)
@@ -41,12 +56,12 @@ void can_filter_init(void)
 /**
 ************************************************************************
 * @brief:      	canx_bsp_send_data(FDCAN_HandleTypeDef *hfdcan, uint16_t id, uint8_t *data, uint32_t len)
-* @param:       hcan: CAN¾ä±ú
-* @param:       id: 	CANÉè±¸ID
-* @param:       data: ·¢ËÍµÄÊý¾Ý
-* @param:       len:  ·¢ËÍµÄÊý¾Ý³¤¶È
+* @param:       hcan: CANï¿½ï¿½ï¿½
+* @param:       id: 	CANï¿½è±¸ID
+* @param:       data: ï¿½ï¿½ï¿½Íµï¿½ï¿½ï¿½ï¿½ï¿½
+* @param:       len:  ï¿½ï¿½ï¿½Íµï¿½ï¿½ï¿½ï¿½Ý³ï¿½ï¿½ï¿½
 * @retval:     	void
-* @details:    	·¢ËÍÊý¾Ý
+* @details:    	ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½
 ************************************************************************
 **/
 uint8_t canx_send_data(CAN_HandleTypeDef *hcan, uint16_t id, uint8_t *data, uint32_t len)
@@ -59,7 +74,7 @@ uint8_t canx_send_data(CAN_HandleTypeDef *hcan, uint16_t id, uint8_t *data, uint
 	tx_header.RTR   = 0;
 	tx_header.DLC   = len;
 tx_header.TransmitGlobalTime = DISABLE;
-  /*ÕÒµ½¿ÕµÄ·¢ËÍÓÊÏä£¬°ÑÊý¾Ý·¢ËÍ³öÈ¥*/
+  /*ï¿½Òµï¿½ï¿½ÕµÄ·ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ä£¬ï¿½ï¿½ï¿½ï¿½ï¿½Ý·ï¿½ï¿½Í³ï¿½È¥*/
 	uint32_t tx_mailbox;
 uint32_t wait_timeout = 0x0FFFFF;
 		while(HAL_CAN_GetTxMailboxesFreeLevel(hcan) == 0 && wait_timeout > 0) wait_timeout--;
@@ -71,11 +86,11 @@ uint32_t wait_timeout = 0x0FFFFF;
 /**
 ************************************************************************
 * @brief:      	canx_bsp_receive(CAN_HandleTypeDef *hcan, uint8_t *buf)
-* @param:       hcan: CAN¾ä±ú
-* @param[out]:  rec_id: 	½ÓÊÕµ½Êý¾ÝµÄCANÉè±¸ID
-* @param:       buf£º½ÓÊÕÊý¾Ý»º´æ
-* @retval:     	½ÓÊÕµÄÊý¾Ý³¤¶È
-* @details:    	½ÓÊÕÊý¾Ý
+* @param:       hcan: CANï¿½ï¿½ï¿½
+* @param[out]:  rec_id: 	ï¿½ï¿½ï¿½Õµï¿½ï¿½ï¿½ï¿½Ýµï¿½CANï¿½è±¸ID
+* @param:       bufï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½Ý»ï¿½ï¿½ï¿½
+* @retval:     	ï¿½ï¿½ï¿½Õµï¿½ï¿½ï¿½ï¿½Ý³ï¿½ï¿½ï¿½
+* @details:    	ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½
 ************************************************************************
 **/
 uint8_t canx_receive(hcan_t *hcan, uint16_t *rec_id, uint8_t *buf)
@@ -84,7 +99,7 @@ uint8_t canx_receive(hcan_t *hcan, uint16_t *rec_id, uint8_t *buf)
   if (HAL_CAN_GetRxMessage(hcan, CAN_RX_FIFO0, &rx_header, buf) == HAL_OK)
 	{
 		*rec_id = rx_header.StdId;
-		return rx_header.DLC; //½ÓÊÕÊý¾Ý³¤¶È
+		return rx_header.DLC; //ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½Ý³ï¿½ï¿½ï¿½
 	}
 	else
 		return 0;
@@ -92,16 +107,18 @@ uint8_t canx_receive(hcan_t *hcan, uint16_t *rec_id, uint8_t *buf)
 /**
 ************************************************************************
 * @brief:      	HAL_CAN_RxFifo0MsgPendingCallback(CAN_HandleTypeDef *hcan)
-* @param:       hfdcan£»FDCAN¾ä±ú
-* @param:       RxFifo0ITs£ºÖÐ¶Ï±êÖ¾Î»
+* @param:       hfdcanï¿½ï¿½FDCANï¿½ï¿½ï¿½
+* @param:       RxFifo0ITsï¿½ï¿½ï¿½Ð¶Ï±ï¿½Ö¾Î»
 * @retval:     	void
-* @details:    	HAL¿âµÄCANÖÐ¶Ï»Øµ÷º¯Êý
+* @details:    	HALï¿½ï¿½ï¿½CANï¿½Ð¶Ï»Øµï¿½ï¿½ï¿½ï¿½ï¿½
 ************************************************************************
 **/
 void HAL_CAN_RxFifo0MsgPendingCallback(hcan_t *hcan)
 {
 	if(hcan == &hcan1) {
 		can1_rx_callback();
+	} else if(hcan == &hcan2) {
+		can2_rx_callback();
 	}
 }
 /**
@@ -109,7 +126,7 @@ void HAL_CAN_RxFifo0MsgPendingCallback(hcan_t *hcan)
 * @brief:      	can1_rx_callback(void)
 * @param:       void
 * @retval:     	void
-* @details:    	¹©ÓÃ»§µ÷ÓÃµÄ½ÓÊÕÈõº¯Êý
+* @details:    	ï¿½ï¿½ï¿½Ã»ï¿½ï¿½ï¿½ï¿½ÃµÄ½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½
 ************************************************************************
 **/
 __weak void can1_rx_callback(void)
@@ -121,7 +138,7 @@ __weak void can1_rx_callback(void)
 * @brief:      	can2_rx_callback(void)
 * @param:       void
 * @retval:     	void
-* @details:    	¹©ÓÃ»§µ÷ÓÃµÄ½ÓÊÕÈõº¯Êý
+* @details:    	ï¿½ï¿½ï¿½Ã»ï¿½ï¿½ï¿½ï¿½ÃµÄ½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½
 ************************************************************************
 **/
 __weak void can2_rx_callback(void)
