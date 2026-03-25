@@ -49,6 +49,7 @@ void can_filter_init(void)
 	can_filter_st.FilterMaskIdLow = 0x0000;
 	can_filter_st.FilterBank = 0;
 	can_filter_st.FilterFIFOAssignment = CAN_RX_FIFO0;
+	can_filter_st.SlaveStartFilterBank = 14;  // bank 0-13 给 CAN1, 14+ 给 CAN2
 	HAL_CAN_ConfigFilter(&hcan1, &can_filter_st);
 	HAL_CAN_Start(&hcan1);
 	HAL_CAN_ActivateNotification(&hcan1, CAN_IT_RX_FIFO0_MSG_PENDING);

@@ -5,12 +5,12 @@
 #include "can.h"
 
 // 麦轮底盘电机 ID（大疆 3508 + C620 电调）
-// C620 电调接收 ID: 0x1FF 控制 ID 5-8, 0x200 控制 ID 1-4
-// 你的 ID: 左前5 右前6 左后3 右后4
-#define CHASSIS_LF  0   // 左前 ID=5
-#define CHASSIS_RF  1   // 右前 ID=6
-#define CHASSIS_LR  2   // 左后 ID=3
-#define CHASSIS_RR  3   // 右后 ID=4
+// 全部用 0x200 帧控制 ID 1-4
+// 左前=1, 右前=2, 右后=3, 左后=4
+#define CHASSIS_LF  0   // 左前 ID=1
+#define CHASSIS_RF  1   // 右前 ID=2
+#define CHASSIS_RR  2   // 右后 ID=3
+#define CHASSIS_LR  3   // 左后 ID=4
 
 // 3508 电机反馈数据
 typedef struct {
@@ -22,16 +22,22 @@ typedef struct {
 
 extern chassis_motor_fb_t chassis_fb[4];
 
-// 初始化（注册 CAN2 回调）
-void chassis_init(void);
+// === M2006 夹爪旋转电机 (ID=5,6, C610 电调) ===
+#define GRIP_ROT_A  0   // 旋转电机A ID=5
+#define GRIP_ROT_B  1   // 旋转电机B ID=6
 
-// 发送四个电机电流指令（-16384~16384）
+extern chassis_motor_fb_t grip_rot_fb[2];
+
+// 发送底盘四个电机电流（-16384~16384）
 void chassis_set_current(int16_t lf, int16_t rf, int16_t lr, int16_t rr);
 
-// 麦轮运动解算：vx=前后, vy=左右平移, wz=旋转，speed_max=限速
+// 发送M2006旋转电机电流（-10000~10000）
+void grip_rot_set_current(int16_t mot_a, int16_t mot_b);
+
+// 麦轮运动解算
 void chassis_mecanum_calc(float vx, float vy, float wz, float speed_max);
 
-// CAN2 接收回调（在 bsp_can 的 can2_rx_callback 中调用）
+// CAN2 接收回调
 void chassis_can2_callback(void);
 
 #endif /* __CHASSIS_H__ */

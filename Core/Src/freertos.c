@@ -397,6 +397,15 @@ __weak void Gimbal_Task(void *argument)
   float int_m2 = 0.0f;
   float int_m3 = 0.0f;
 
+  // === M2006 夹爪旋转 位置PID ===
+  int32_t grip_rot_target = 0;         // 目标累计角度（连续，不回绕）
+  int32_t grip_rot_accum  = 0;         // 实际累计角度
+  uint16_t grip_rot_last_angle = 0;    // 上一次原始角度
+  bool grip_rot_inited = false;        // 首帧标记
+  float grip_rot_kp = 15.0f;          // 位置P
+  float grip_rot_kd = 0.8f;           // 速度D（用rpm反馈）
+  int16_t grip_rot_max_cur = 5000;    // 电流限幅
+
   uint8_t last_s0 = 0;
   uint8_t gripper_state = GRIPPER_HOLD;
   bool gripper_overcurrent = false;
@@ -448,10 +457,15 @@ __weak void Gimbal_Task(void *argument)
     }
     else if (s0 == 2)
     {
-      // ===== S[0]=2: 底座Yaw + 夹爪 =====
+      // ===== S[0]=2: 底座Yaw + 夹爪 + 夹爪旋转 =====
       float v1 = (float)ch0;
       if (fabs(v1) < 20.0f) v1 = 0.0f;
       target_vel_m1 = v1 * 0.008f;
+
+      // ch3 控制 M2006 夹爪旋转（推杆→旋转，松杆→锁位）
+      float rot_in = (float)ch3;
+      if (fabs(rot_in) < 20.0f) rot_in = 0.0f;
+      grip_rot_target += (int32_t)(rot_in * 0.15f);  // 积分到目标角度
 
       // 夹爪状态机
       uint8_t desired_grip = GRIPPER_HOLD;
@@ -528,6 +542,33 @@ __weak void Gimbal_Task(void *argument)
     } else {
         motor_cmd[3] = (motor_cmd_t){ gripper_hold_pos, 0, gripper_hold_kp, gripper_hold_kd, 0 };
     }
+
+    // --- 6. M2006 夹爪旋转 位置PD环 ---
+    // 累计角度跟踪（处理 0-8191 回绕，转换为连续角度）
+    uint16_t raw_a = grip_rot_fb[GRIP_ROT_A].angle;
+    if (!grip_rot_inited) {
+        grip_rot_last_angle = raw_a;
+        grip_rot_accum = 0;
+        grip_rot_target = 0;
+        grip_rot_inited = true;
+    }
+    int32_t delta = (int32_t)raw_a - (int32_t)grip_rot_last_angle;
+    if (delta > 4096)  delta -= 8192;  // 回绕修正
+    if (delta < -4096) delta += 8192;
+    grip_rot_accum += delta;
+    grip_rot_last_angle = raw_a;
+
+    // PD 位置环
+    int32_t rot_err = grip_rot_target - grip_rot_accum;
+    float rot_spd = (float)grip_rot_fb[GRIP_ROT_A].speed_rpm;
+    float rot_out = grip_rot_kp * (float)rot_err - grip_rot_kd * rot_spd;
+
+    // 限幅
+    if (rot_out >  grip_rot_max_cur) rot_out =  grip_rot_max_cur;
+    if (rot_out < -grip_rot_max_cur) rot_out = -grip_rot_max_cur;
+
+    // 两个电机反向旋转
+    grip_rot_set_current((int16_t)rot_out, -(int16_t)rot_out);
 
     last_s0 = s0;
     osDelay(4);
