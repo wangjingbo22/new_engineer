@@ -38,7 +38,7 @@ void dm_motor_init(void)
 	motor[Motor1].ctrl.tor_set 	= 0.0f;
 	motor[Motor1].ctrl.cur_set 	= 0.0f;
 	motor[Motor1].tmp.PMAX		= 12.5f;
-	motor[Motor1].tmp.VMAX		= 30.0f;
+	motor[Motor1].tmp.VMAX		= 10.0f;
 	motor[Motor1].tmp.TMAX		= 28.0f;
 
 	// Motor2 初始化

@@ -102,7 +102,7 @@ const osThreadAttr_t Remote_TaskHand_attributes = {
 osThreadId_t Gimbal_TaskHandHandle;
 const osThreadAttr_t Gimbal_TaskHand_attributes = {
   .name = "Gimbal_TaskHand",
-  .stack_size = 1024 * 4,
+  .stack_size = 2048 * 4,
   .priority = (osPriority_t) osPriorityRealtime,
 };
 /* Definitions for Referee_TaskHa */
@@ -176,10 +176,10 @@ void MX_FREERTOS_Init(void) {
   Ins_TaskHandlerHandle = osThreadNew(Ins_Task, NULL, &Ins_TaskHandler_attributes);
 
   /* creation of WatchDog_TaskHa */
-  WatchDog_TaskHaHandle = osThreadNew(WatchDog_Task, NULL, &WatchDog_TaskHa_attributes);
+  //WatchDog_TaskHaHandle = osThreadNew(WatchDog_Task, NULL, &WatchDog_TaskHa_attributes);
 
   /* creation of Shoot_TaskHandl */
-  Shoot_TaskHandlHandle = osThreadNew(Shoot_Task, NULL, &Shoot_TaskHandl_attributes);
+  //Shoot_TaskHandlHandle = osThreadNew(Shoot_Task, NULL, &Shoot_TaskHandl_attributes);
 
   /* creation of Remote_TaskHand */
   Remote_TaskHandHandle = osThreadNew(Remote_Task, NULL, &Remote_TaskHand_attributes);
@@ -188,7 +188,7 @@ void MX_FREERTOS_Init(void) {
   Gimbal_TaskHandHandle = osThreadNew(Gimbal_Task, NULL, &Gimbal_TaskHand_attributes);
 
   /* creation of Referee_TaskHa */
-  Referee_TaskHaHandle = osThreadNew(Referee_Task, NULL, &Referee_TaskHa_attributes);
+  //Referee_TaskHaHandle = osThreadNew(Referee_Task, NULL, &Referee_TaskHa_attributes);
 
   /* USER CODE BEGIN RTOS_THREADS */
   /* add threads, ... */
@@ -318,22 +318,18 @@ __weak void Remote_Task(void *argument)
 __weak void Gimbal_Task(void *argument)
 {
   /* USER CODE BEGIN Gimbal_Task */
-  // Initialize CAN and Filter
+
+  // ====================== 初始化 ======================
   bsp_can_init();
   rc_init();
   osDelay(100);
-
-  // Initialize Motors struct
   dm_motor_init();
   osDelay(100);
 
-  // Enable Motors: 先清错再使能，间隔拉大防丢帧，失败重试
-  for(int retry = 0; retry < 3; retry++)
-  {
-      for(int i = 0; i < num; i++)
-      {
-          if (motor[i].id == 0x01 || motor[i].id == 0x04 || motor[i].id == 0x07 || motor[i].id == 0x0A)
-          {
+  for (int retry = 0; retry < 3; retry++) {
+      for (int i = 0; i < num; i++) {
+          if (motor[i].id == 0x01 || motor[i].id == 0x04 ||
+              motor[i].id == 0x07 || motor[i].id == 0x0A) {
               dm_motor_clear_err(&hcan1, &motor[i]);
               osDelay(50);
               dm_motor_enable(&hcan1, &motor[i]);
@@ -343,229 +339,189 @@ __weak void Gimbal_Task(void *argument)
       osDelay(100);
   }
 
-  // === Motor 1/2/3 MIT PD 参数 ===
-  // Kp 降低减少振荡，Kd 拉满增加阻尼，重力靠积分补偿兜底
-  float kp_m1 = 150.0f;    // 底部yaw DM4340（无重力，柔一点更稳）
-  float kd_m1 = 5.0f;
-  float kp_m2 = 200.0f;    // 大臂 8009P
-  float kd_m2 = 5.0f;
-  float kp_m3 = 150.0f;    // 小臂 8009P
-  float kd_m3 = 5.0f;
+  for (int w = 0; w < 200; w++) {
+      bool ok = true;
+      for (int i = 0; i < num; i++) {
+          if (motor[i].id == 0x01 || motor[i].id == 0x04 ||
+              motor[i].id == 0x07 || motor[i].id == 0x0A) {
+              if (motor[i].para.state == 0) ok = false;
+          }
+      }
+      if (ok) break;
+      osDelay(5);
+  }
+  osDelay(200);
 
-  // === 夹爪参数 (Motor 4, MIT 模式) ===
+  // ====================== 参数（const 防误改）======================
+  const float kp_m1 = 150.0f, kd_m1 = 5.0f;
+  const float kp_m2 = 200.0f, kd_m2 = 5.0f;
+  const float kp_m3 = 150.0f, kd_m3 = 5.0f;
+
   #define GRIPPER_HOLD    0
   #define GRIPPER_CLAMP   1
   #define GRIPPER_RELEASE 2
-  float gripper_clamp_vel   =  2.0f;
-  float gripper_release_vel = -2.0f;
-  float gripper_kd          =  1.0f;
-  float gripper_hold_kp     = 50.0f;
-  float gripper_hold_kd     =  2.0f;
-  float gripper_tor_limit   =  3.0f;
+  const float gripper_clamp_vel   =  2.0f;
+  const float gripper_release_vel = -2.0f;
+  const float gripper_kd          =  1.0f;
+  const float gripper_hold_kp     = 50.0f;
+  const float gripper_hold_kd     =  2.0f;
+  const float gripper_tor_limit   =  3.0f;
 
-  // 等待电机回传第一帧真实位置
-  bool init_flag = false;
-  uint32_t timeout_cnt = 0;
-  while (!init_flag && timeout_cnt < 200) {
-      init_flag = true;
-      for (int i = 0; i < num; i++) {
-          if (motor[i].id == 0x01 || motor[i].id == 0x04 || motor[i].id == 0x07 || motor[i].id == 0x0A) {
-              if (motor[i].para.state == 0) {
-                  init_flag = false;
-              }
-          }
-      }
-      osDelay(5);
-      timeout_cnt++;
-  }
-  osDelay(100);
+  const float rot_speed_scale = 8.0f;
+  const float rot_brake_gain  = 3.0f;
+  const int16_t rot_max_cur   = 5000;
 
-  // PSI 目标位置从当前编码器位置启动（仅此一次读编码器，之后只做增量）
+  const int16_t RC_DEADZONE = 30;     // 死区加大，过滤零漂和噪声
+  const float POS_LIMIT     = 12.0f;  // 位置安全限幅（PMAX=12.5）
+
+  // ====================== 状态 ======================
   float pos_ref_m1 = motor[Motor1].para.pos;
   float pos_ref_m2 = motor[Motor2].para.pos;
   float pos_ref_m3 = motor[Motor3].para.pos;
   float gripper_hold_pos = motor[Motor4].para.pos;
-
-  // TIM8 已在 main.c 初始化，写入初始 MIT 保持指令后启动
-  motor_cmd[0] = (motor_cmd_t){ pos_ref_m1, 0, kp_m1, kd_m1, 0 };
-  motor_cmd[1] = (motor_cmd_t){ pos_ref_m2, 0, kp_m2, kd_m2, 0 };
-  motor_cmd[2] = (motor_cmd_t){ pos_ref_m3, 0, kp_m3, kd_m3, 0 };
-  motor_cmd[3] = (motor_cmd_t){ gripper_hold_pos, 0, gripper_hold_kp, gripper_hold_kd, 0 };
-  motor_send_tim_start();
-
-  osDelay(500);
-
-  float int_m2 = 0.0f;
-  float int_m3 = 0.0f;
-
-  // === M2006 夹爪旋转（不依赖编码器绝对值，只用速度反馈）===
-  float grip_rot_speed_scale = 8.0f;   // 摇杆→电流比例
-  float grip_rot_brake_gain  = 3.0f;   // 刹车增益（越大停得越快）
-  int16_t grip_rot_max_cur   = 5000;   // 电流限幅
+  float int_m2 = 0.0f, int_m3 = 0.0f;
 
   uint8_t last_s0 = 0;
   uint8_t gripper_state = GRIPPER_HOLD;
   bool gripper_overcurrent = false;
 
-  for(;;)
-  {
-    // --- 1. 快照遥控器数据（一次性拷贝，防止 DMA 中途更新导致撕裂）---
-    uint8_t s0  = rc.s[0];
-    uint8_t s1  = rc.s[1];
-    int16_t ch0 = rc.ch[0];
-    int16_t ch1 = rc.ch[1];
-    int16_t ch2 = rc.ch[2];
-    int16_t ch3 = rc.ch[3];
+  // RC 滤波（上一帧有效值）
+  int16_t ch_prev[4] = {0, 0, 0, 0};
 
-    // 遥控器未连接时（s0=0）全部停
-    if (s0 == 0) {
+  // ====================== 主循环 500Hz 直接发送 ======================
+  for (;;)
+  {
+    // -------- 1. RC 采集 + 校验 + 滤波 --------
+    uint8_t s0 = rc.s[0];
+    uint8_t s1 = rc.s[1];
+    int16_t ch_raw[4] = { rc.ch[0], rc.ch[1], rc.ch[2], rc.ch[3] };
+
+    // 校验：开关值必须 1/2/3，通道值必须 [-660, 660]
+    bool rc_ok = (s0 >= 1 && s0 <= 3);
+    for (int i = 0; i < 4; i++) {
+        if (ch_raw[i] < -660 || ch_raw[i] > 660) rc_ok = false;
+    }
+    if (!rc_ok) {
         chassis_set_current(0, 0, 0, 0);
-        last_s0 = s0;
-        osDelay(4);
+        grip_rot_set_current(0, 0);
+        // DM电机不发新指令→电机维持上一帧状态
+        last_s0 = 0;
+        osDelay(2);
         continue;
     }
 
-    // --- 2. 获取夹爪状态 ---
-    float pos_m4 = motor[Motor4].para.pos;
-    float tor_m4 = motor[Motor4].para.tor;
+    // 滤波（取当前帧和上一帧平均）+ 死区
+    int16_t ch[4];
+    for (int i = 0; i < 4; i++) {
+        int16_t val = (ch_raw[i] + ch_prev[i]) / 2;
+        ch[i] = (val > -RC_DEADZONE && val < RC_DEADZONE) ? 0 : val;
+        ch_prev[i] = ch_raw[i];
+    }
 
-    float target_vel_m1 = 0.0f;
-    float target_vel_m2 = 0.0f;
-    float target_vel_m3 = 0.0f;
-
-    // --- 3. 切档同步 ---
-    if (s0 != last_s0) {
+    // -------- 2. 切档同步 --------
+    if (s0 != last_s0 && last_s0 != 0) {
         pos_ref_m1 = motor[Motor1].para.pos;
         pos_ref_m2 = motor[Motor2].para.pos;
         pos_ref_m3 = motor[Motor3].para.pos;
+        int_m2 = 0.0f;
+        int_m3 = 0.0f;
     }
 
-    // --- 4. 模式分发（精确匹配，不用 else 兜底）---
-    if (s0 == 1)
-    {
-      // ===== S[0]=1: 大臂/小臂 =====
-      float v2 = (float)ch3;
-      float v3 = (float)ch1;
-      if (fabs(v2) < 20.0f) v2 = 0.0f;
-      if (fabs(v3) < 20.0f) v3 = 0.0f;
+    // -------- 3. 模式分发 --------
+    float vel_m1 = 0, vel_m2 = 0, vel_m3 = 0;
 
-      target_vel_m2 = v2 * 0.005f;
-      target_vel_m3 = v3 * 0.005f;
+    if (s0 == 1) {
+        vel_m2 = (float)ch[3] * 0.005f;
+        vel_m3 = (float)ch[1] * 0.005f;
     }
-    else if (s0 == 2)
-    {
-      // ===== S[0]=2: 底座Yaw + 夹爪 + 夹爪旋转 =====
-      float v1 = (float)ch0;
-      if (fabs(v1) < 20.0f) v1 = 0.0f;
-      target_vel_m1 = v1 * 0.008f;
+    else if (s0 == 2) {
+        vel_m1 = (float)ch[0] * 0.008f;
 
-      // ch3 控制 M2006 夹爪旋转（推杆→转，松杆→刹停）
+        uint8_t desired = GRIPPER_HOLD;
+        if (s1 == 1) desired = GRIPPER_CLAMP;
+        else if (s1 == 2) desired = GRIPPER_RELEASE;
 
-      // 夹爪状态机
-      uint8_t desired_grip = GRIPPER_HOLD;
-      if (s1 == 1)      desired_grip = GRIPPER_CLAMP;
-      else if (s1 == 2) desired_grip = GRIPPER_RELEASE;
-      else               desired_grip = GRIPPER_HOLD;
-
-      if (gripper_overcurrent) {
-          if (desired_grip == GRIPPER_HOLD) gripper_overcurrent = false;
-          desired_grip = GRIPPER_HOLD;
-      }
-      if (desired_grip != gripper_state) {
-          if (desired_grip == GRIPPER_HOLD) gripper_hold_pos = pos_m4;
-          gripper_state = desired_grip;
-      }
-      if ((gripper_state == GRIPPER_CLAMP || gripper_state == GRIPPER_RELEASE) &&
-          fabs(tor_m4) > gripper_tor_limit) {
-          gripper_hold_pos = pos_m4;
-          gripper_state = GRIPPER_HOLD;
-          gripper_overcurrent = true;
-      }
+        if (gripper_overcurrent) {
+            if (desired == GRIPPER_HOLD) gripper_overcurrent = false;
+            desired = GRIPPER_HOLD;
+        }
+        if (desired != gripper_state) {
+            if (desired == GRIPPER_HOLD) gripper_hold_pos = motor[Motor4].para.pos;
+            gripper_state = desired;
+        }
+        if ((gripper_state == GRIPPER_CLAMP || gripper_state == GRIPPER_RELEASE) &&
+            fabs(motor[Motor4].para.tor) > gripper_tor_limit) {
+            gripper_hold_pos = motor[Motor4].para.pos;
+            gripper_state = GRIPPER_HOLD;
+            gripper_overcurrent = true;
+        }
     }
-    else if (s0 == 3)
-    {
-      // ===== S[0]=3: 麦轮底盘 =====
-      if (gripper_state != GRIPPER_HOLD) {
-          gripper_hold_pos = pos_m4;
-          gripper_state = GRIPPER_HOLD;
-      }
-
-      float vx_in = (float)ch1;   // 前后
-      float vy_in = (float)ch0;   // 左右平移
-      float wz_in = (float)ch2;   // 旋转
-      if (fabs(vx_in) < 20.0f) vx_in = 0.0f;
-      if (fabs(vy_in) < 20.0f) vy_in = 0.0f;
-      if (fabs(wz_in) < 20.0f) wz_in = 0.0f;
-
-      chassis_mecanum_calc(vx_in * 10.0f, vy_in * 10.0f, -wz_in * 8.0f, 5000.0f);
+    else if (s0 == 3) {
+        if (gripper_state != GRIPPER_HOLD) {
+            gripper_hold_pos = motor[Motor4].para.pos;
+            gripper_state = GRIPPER_HOLD;
+        }
+        chassis_mecanum_calc(
+            (float)ch[1] * 10.0f,
+            (float)ch[0] * 10.0f,
+           -(float)ch[2] * 8.0f, 5000.0f);
     }
 
-    // 非底盘模式 → 停车
-    if (s0 != 3) {
-        chassis_set_current(0, 0, 0, 0);
-    }
+    if (s0 != 3) chassis_set_current(0, 0, 0, 0);
 
-    // --- 3. 摇杆直接积分到位置（推就动，松就停，零惯性）---
-    pos_ref_m1 += target_vel_m1 * 0.004f;
-    pos_ref_m2 += target_vel_m2 * 0.004f;
-    pos_ref_m3 += target_vel_m3 * 0.004f;
+    // -------- 4. 位置积分 + 限幅 --------
+    pos_ref_m1 += vel_m1 * 0.002f;
+    pos_ref_m2 += vel_m2 * 0.002f;
+    pos_ref_m3 += vel_m3 * 0.002f;
 
-    // --- 4. 重力补偿 (Motor 2/3) ---
-    float pos_m2 = motor[Motor2].para.pos;
-    float pos_m3 = motor[Motor3].para.pos;
-    float err_m2 = pos_ref_m2 - pos_m2;
-    float err_m3 = pos_ref_m3 - pos_m3;
-    float gi_m2 = (fabs(target_vel_m2) < 0.01f) ? 2.0f : 0.5f;
-    float gi_m3 = (fabs(target_vel_m3) < 0.01f) ? 1.0f : 0.2f;
-    int_m2 += err_m2 * gi_m2;
-    int_m3 += err_m3 * gi_m3;
-    if(int_m2 >  25.0f) int_m2 =  25.0f;
-    if(int_m2 < -25.0f) int_m2 = -25.0f;
-    if(int_m3 >  20.0f) int_m3 =  20.0f;
-    if(int_m3 < -20.0f) int_m3 = -20.0f;
+    if (pos_ref_m1 >  POS_LIMIT) pos_ref_m1 =  POS_LIMIT;
+    if (pos_ref_m1 < -POS_LIMIT) pos_ref_m1 = -POS_LIMIT;
+    if (pos_ref_m2 >  POS_LIMIT) pos_ref_m2 =  POS_LIMIT;
+    if (pos_ref_m2 < -POS_LIMIT) pos_ref_m2 = -POS_LIMIT;
+    if (pos_ref_m3 >  POS_LIMIT) pos_ref_m3 =  POS_LIMIT;
+    if (pos_ref_m3 < -POS_LIMIT) pos_ref_m3 = -POS_LIMIT;
 
-    // --- 5. 写入共享指令 ---
-    // 关闭 TIM8 中断防止 ISR 读到写了一半的结构体（数据竞争保护）
-    __HAL_TIM_DISABLE_IT(&htim8, TIM_IT_UPDATE);
+    // -------- 5. 重力补偿 --------
+    float err2 = pos_ref_m2 - motor[Motor2].para.pos;
+    float err3 = pos_ref_m3 - motor[Motor3].para.pos;
+    int_m2 += err2 * ((fabs(vel_m2) < 0.01f) ? 2.0f : 0.5f);
+    int_m3 += err3 * ((fabs(vel_m3) < 0.01f) ? 2.0f : 0.5f);
+    if (int_m2 >  25.0f) int_m2 =  25.0f;
+    if (int_m2 < -25.0f) int_m2 = -25.0f;
+    if (int_m3 >  20.0f) int_m3 =  20.0f;
+    if (int_m3 < -20.0f) int_m3 = -20.0f;
 
-    motor_cmd[0] = (motor_cmd_t){ pos_ref_m1, 0, kp_m1, kd_m1, 0.0f };
-    motor_cmd[1] = (motor_cmd_t){ pos_ref_m2, 0, kp_m2, kd_m2, int_m2 };
-    motor_cmd[2] = (motor_cmd_t){ pos_ref_m3, 0, kp_m3, kd_m3, int_m3 };
+    // -------- 6. DM 电机直接发送（无 ISR，零数据竞争）--------
+    mit_ctrl(&hcan1, &motor[Motor1], motor[Motor1].id,
+             pos_ref_m1, 0, kp_m1, kd_m1, 0);
+    mit_ctrl(&hcan1, &motor[Motor2], motor[Motor2].id,
+             pos_ref_m2, 0, kp_m2, kd_m2, int_m2);
+    mit_ctrl(&hcan1, &motor[Motor3], motor[Motor3].id,
+             pos_ref_m3, 0, kp_m3, kd_m3, int_m3);
 
-    if (gripper_state == GRIPPER_CLAMP) {
-        motor_cmd[3] = (motor_cmd_t){ 0, gripper_clamp_vel, 0, gripper_kd, 0 };
-    } else if (gripper_state == GRIPPER_RELEASE) {
-        motor_cmd[3] = (motor_cmd_t){ 0, gripper_release_vel, 0, gripper_kd, 0 };
-    } else {
-        motor_cmd[3] = (motor_cmd_t){ gripper_hold_pos, 0, gripper_hold_kp, gripper_hold_kd, 0 };
-    }
+    if (gripper_state == GRIPPER_CLAMP)
+        mit_ctrl(&hcan1, &motor[Motor4], motor[Motor4].id,
+                 0, gripper_clamp_vel, 0, gripper_kd, 0);
+    else if (gripper_state == GRIPPER_RELEASE)
+        mit_ctrl(&hcan1, &motor[Motor4], motor[Motor4].id,
+                 0, gripper_release_vel, 0, gripper_kd, 0);
+    else
+        mit_ctrl(&hcan1, &motor[Motor4], motor[Motor4].id,
+                 gripper_hold_pos, 0, gripper_hold_kp, gripper_hold_kd, 0);
 
-    __HAL_TIM_ENABLE_IT(&htim8, TIM_IT_UPDATE);
-
-    // --- 6. M2006 夹爪旋转（速度控制 + 主动刹车，不依赖编码器）---
-    float rot_stick = (s0 == 2) ? (float)ch3 : 0.0f;
-    if (fabs(rot_stick) < 20.0f) rot_stick = 0.0f;
-
+    // -------- 7. M2006 夹爪旋转 --------
+    float rot_in = (s0 == 2) ? (float)ch[3] : 0.0f;
+    if (fabs(rot_in) < RC_DEADZONE) rot_in = 0;
     float rot_spd = (float)grip_rot_fb[GRIP_ROT_A].speed_rpm;
-    float rot_cur;
-
-    if (fabs(rot_stick) > 0.1f) {
-        // 推杆：电流正比于摇杆值
-        rot_cur = rot_stick * grip_rot_speed_scale;
-    } else {
-        // 松杆：主动刹车（电流反向于当前速度）
-        rot_cur = -rot_spd * grip_rot_brake_gain;
-    }
-
-    // 限幅
-    if (rot_cur >  grip_rot_max_cur) rot_cur =  grip_rot_max_cur;
-    if (rot_cur < -grip_rot_max_cur) rot_cur = -grip_rot_max_cur;
-
-    // 两个电机反向
+    float rot_cur = (fabs(rot_in) > 0.1f)
+        ? (rot_in * rot_speed_scale)
+        : (-rot_spd * rot_brake_gain);
+    if (rot_cur >  rot_max_cur) rot_cur =  rot_max_cur;
+    if (rot_cur < -rot_max_cur) rot_cur = -rot_max_cur;
     grip_rot_set_current((int16_t)rot_cur, -(int16_t)rot_cur);
 
     last_s0 = s0;
-    osDelay(4);
+    osDelay(2);
   }
   /* USER CODE END Gimbal_Task */
 }
