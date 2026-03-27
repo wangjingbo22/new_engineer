@@ -423,19 +423,18 @@ __weak void Gimbal_Task(void *argument)
         pos_ref_m1 = motor[Motor1].para.pos;
         pos_ref_m2 = motor[Motor2].para.pos;
         pos_ref_m3 = motor[Motor3].para.pos;
-        int_m2 = 0.0f;
-        int_m3 = 0.0f;
+        // 不清零 int_m2/int_m3，保留已积累的重力补偿，防止切档下坠
     }
 
     // -------- 3. 模式分发 --------
     float vel_m1 = 0, vel_m2 = 0, vel_m3 = 0;
 
     if (s0 == 1) {
-        vel_m2 = (float)ch[3] * 0.005f;
-        vel_m3 = (float)ch[1] * 0.005f;
+        vel_m2 = -(float)ch[3] * 0.005f;
+        vel_m3 = -(float)ch[1] * 0.005f;
     }
     else if (s0 == 2) {
-        vel_m1 = (float)ch[0] * 0.008f;
+        vel_m1 = -(float)ch[0] * 0.008f;
 
         uint8_t desired = GRIPPER_HOLD;
         if (s1 == 1) desired = GRIPPER_CLAMP;
@@ -462,9 +461,10 @@ __weak void Gimbal_Task(void *argument)
             gripper_state = GRIPPER_HOLD;
         }
         chassis_mecanum_calc(
-            (float)ch[1] * 10.0f,
-            (float)ch[0] * 10.0f,
-           -(float)ch[2] * 8.0f, 5000.0f);
+            (float)ch[2] * 10.0f,    // vx 前后
+            (float)ch[1] * 10.0f,    // vy 平移
+            (float)ch[0] * 8.0f,     // wz 旋转
+            5000.0f);
     }
 
     if (s0 != 3) chassis_set_current(0, 0, 0, 0);
@@ -518,7 +518,7 @@ __weak void Gimbal_Task(void *argument)
         : (-rot_spd * rot_brake_gain);
     if (rot_cur >  rot_max_cur) rot_cur =  rot_max_cur;
     if (rot_cur < -rot_max_cur) rot_cur = -rot_max_cur;
-    grip_rot_set_current((int16_t)rot_cur, -(int16_t)rot_cur);
+    grip_rot_set_current((int16_t)rot_cur, (int16_t)rot_cur);
 
     last_s0 = s0;
     osDelay(2);
