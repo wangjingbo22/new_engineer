@@ -385,6 +385,11 @@ __weak void Gimbal_Task(void *argument)
   uint8_t gripper_state = GRIPPER_HOLD;
   bool gripper_overcurrent = false;
 
+  // M2006 上下位置追踪
+  float updown_angle    = 0.0f;  // 累计编码器角度（8192单位/圈）
+  float updown_hold     = 0.0f;  // 松杆保持目标
+  uint16_t updown_last_raw = grip_rot_fb[GRIP_ROT_A].angle;
+
   // RC 滤波（上一帧有效值）
   int16_t ch_prev[4] = {0, 0, 0, 0};
 
@@ -509,16 +514,48 @@ __weak void Gimbal_Task(void *argument)
         mit_ctrl(&hcan1, &motor[Motor4], motor[Motor4].id,
                  gripper_hold_pos, 0, gripper_hold_kp, gripper_hold_kd, 0);
 
-    // -------- 7. M2006 夹爪旋转 --------
+    // -------- 7. M2006 夹爪旋转(ch3) / 上下(ch2) --------
     float rot_in = (s0 == 2) ? (float)ch[3] : 0.0f;
-    if (fabs(rot_in) < RC_DEADZONE) rot_in = 0;
-    float rot_spd = (float)grip_rot_fb[GRIP_ROT_A].speed_rpm;
-    float rot_cur = (fabs(rot_in) > 0.1f)
-        ? (rot_in * rot_speed_scale)
-        : (-rot_spd * rot_brake_gain);
-    if (rot_cur >  rot_max_cur) rot_cur =  rot_max_cur;
-    if (rot_cur < -rot_max_cur) rot_cur = -rot_max_cur;
-    grip_rot_set_current((int16_t)rot_cur, (int16_t)rot_cur);
+    float ud_in  = (s0 == 2) ? (float)ch[2] : 0.0f;
+    if (fabs(rot_in) < RC_DEADZONE) rot_in = 0.0f;
+    if (fabs(ud_in)  < RC_DEADZONE) ud_in  = 0.0f;
+
+    // 每帧追踪累计角度（处理0-8191溢出），用于上下位置保持
+    uint16_t ud_raw = grip_rot_fb[GRIP_ROT_A].angle;
+    int16_t ud_delta = (int16_t)(ud_raw - updown_last_raw);
+    if (ud_delta >  4096) ud_delta -= 8192;
+    if (ud_delta < -4096) ud_delta += 8192;
+    updown_angle += (float)ud_delta;
+    updown_last_raw = ud_raw;
+
+    float final_cur;
+    bool  counter_rotate;  // true=反向(上下), false=同向(旋转)
+
+    if (fabs(ud_in) > 0.1f) {
+        // ch[2] 推杆：上下，两电机反向
+        final_cur = ud_in * rot_speed_scale;
+        updown_hold = updown_angle;   // 持续更新保持目标
+        counter_rotate = true;
+    } else if (fabs(rot_in) > 0.1f) {
+        // ch[3] 推杆：旋转，两电机同向
+        final_cur = rot_in * rot_speed_scale;
+        updown_hold = updown_angle;   // 旋转时同步，防止切回上下时跳变
+        counter_rotate = false;
+    } else {
+        // 两杆中位：上下位置保持 PD（抵抗重力）
+        float pos_err = updown_hold - updown_angle;
+        float spd = (float)grip_rot_fb[GRIP_ROT_A].speed_rpm;
+        final_cur = pos_err * 5.0f - spd * 1.0f;
+        counter_rotate = true;
+    }
+
+    if (final_cur >  rot_max_cur) final_cur =  rot_max_cur;
+    if (final_cur < -rot_max_cur) final_cur = -rot_max_cur;
+
+    if (counter_rotate)
+        grip_rot_set_current((int16_t)final_cur, -(int16_t)final_cur);  // 上下/保持
+    else
+        grip_rot_set_current((int16_t)final_cur,  (int16_t)final_cur);  // 旋转
 
     last_s0 = s0;
     osDelay(2);
