@@ -367,9 +367,11 @@ __weak void Gimbal_Task(void *argument)
   const float gripper_hold_kd     =  2.0f;
   const float gripper_tor_limit   =  3.0f;
 
-  const float rot_speed_scale = 8.0f;
+  const float rot_speed_scale = 5.0f;   // 降低驱动力，减少跳齿概率
   const float rot_brake_gain  = 3.0f;
-  const int16_t rot_max_cur   = 5000;
+  const int16_t rot_max_cur   = 2000;   // 降低峰值电流，保护齿轮
+  const float rot_spd_limit   = 200.0f; // rpm超过此值认为跳齿，强制刹车
+  const int16_t rot_safe_cur  = 300;    // 超速时最大允许电流
 
   const int16_t RC_DEADZONE = 30;     // 死区加大，过滤零漂和噪声
   const float POS_LIMIT     = 12.0f;  // 位置安全限幅（PMAX=12.5）
@@ -386,9 +388,11 @@ __weak void Gimbal_Task(void *argument)
   bool gripper_overcurrent = false;
 
   // M2006 上下位置追踪
-  float updown_angle    = 0.0f;  // 累计编码器角度（8192单位/圈）
-  float updown_hold     = 0.0f;  // 松杆保持目标
-  uint16_t updown_last_raw = grip_rot_fb[GRIP_ROT_A].angle;
+  float updown_angle    = 0.0f;
+  float updown_hold     = 0.0f;
+  float updown_int      = 0.0f;  // 积分项，补偿重力偏置
+  uint16_t updown_last_raw = 0;
+  bool updown_inited    = false;  // 进入s0=2后首帧仅同步，不输出电流
 
   // RC 滤波（上一帧有效值）
   int16_t ch_prev[4] = {0, 0, 0, 0};
@@ -410,6 +414,11 @@ __weak void Gimbal_Task(void *argument)
         chassis_set_current(0, 0, 0, 0);
         grip_rot_set_current(0, 0);
         // DM电机不发新指令→电机维持上一帧状态
+        // 重置M2006追踪，信号恢复后重新同步编码器，避免跳变
+        updown_inited = false;
+        updown_angle  = 0.0f;
+        updown_hold   = 0.0f;
+        updown_int    = 0.0f;
         last_s0 = 0;
         osDelay(2);
         continue;
@@ -515,47 +524,85 @@ __weak void Gimbal_Task(void *argument)
                  gripper_hold_pos, 0, gripper_hold_kp, gripper_hold_kd, 0);
 
     // -------- 7. M2006 夹爪旋转(ch3) / 上下(ch2) --------
-    float rot_in = (s0 == 2) ? (float)ch[3] : 0.0f;
-    float ud_in  = (s0 == 2) ? (float)ch[2] : 0.0f;
-    if (fabs(rot_in) < RC_DEADZONE) rot_in = 0.0f;
-    if (fabs(ud_in)  < RC_DEADZONE) ud_in  = 0.0f;
-
-    // 每帧追踪累计角度（处理0-8191溢出），用于上下位置保持
-    uint16_t ud_raw = grip_rot_fb[GRIP_ROT_A].angle;
-    int16_t ud_delta = (int16_t)(ud_raw - updown_last_raw);
-    if (ud_delta >  4096) ud_delta -= 8192;
-    if (ud_delta < -4096) ud_delta += 8192;
-    updown_angle += (float)ud_delta;
-    updown_last_raw = ud_raw;
-
-    float final_cur;
-    bool  counter_rotate;  // true=反向(上下), false=同向(旋转)
-
-    if (fabs(ud_in) > 0.1f) {
-        // ch[2] 推杆：上下，两电机反向
-        final_cur = ud_in * rot_speed_scale;
-        updown_hold = updown_angle;   // 持续更新保持目标
-        counter_rotate = true;
-    } else if (fabs(rot_in) > 0.1f) {
-        // ch[3] 推杆：旋转，两电机同向
-        final_cur = rot_in * rot_speed_scale;
-        updown_hold = updown_angle;   // 旋转时同步，防止切回上下时跳变
-        counter_rotate = false;
+    if (s0 != 2) {
+        // 非控制模式：停止输出，重置初始化标志
+        grip_rot_set_current(0, 0);
+        updown_inited = false;
+        updown_angle  = 0.0f;
+        updown_hold   = 0.0f;
+        updown_int    = 0.0f;
+    } else if (!updown_inited) {
+        // 首次进入s0=2：同步编码器基准，本帧不输出电流
+        updown_last_raw = grip_rot_fb[GRIP_ROT_A].angle;
+        updown_angle    = 0.0f;
+        updown_hold     = 0.0f;
+        updown_inited   = true;
+        grip_rot_set_current(0, 0);
     } else {
-        // 两杆中位：上下位置保持 PD（抵抗重力）
-        float pos_err = updown_hold - updown_angle;
-        float spd = (float)grip_rot_fb[GRIP_ROT_A].speed_rpm;
-        final_cur = pos_err * 5.0f - spd * 1.0f;
-        counter_rotate = true;
+        float rot_in = (float)ch[3];
+        float ud_in  = (float)ch[2];
+        if (fabs(rot_in) < RC_DEADZONE) rot_in = 0.0f;
+        if (fabs(ud_in) < RC_DEADZONE) ud_in  = 0.0f;
+
+        // 追踪累计角度（处理0-8191溢出），用于上下位置保持
+        // 旋转模式下电机A也在转但高度不变，此时冻结角度避免漂移
+        uint16_t ud_raw = grip_rot_fb[GRIP_ROT_A].angle;
+        int16_t ud_delta = (int16_t)(ud_raw - updown_last_raw);
+        if (ud_delta >  4096) ud_delta -= 8192;
+        if (ud_delta < -4096) ud_delta += 8192;
+        if (fabs(rot_in) < 0.1f) {
+            // 非旋转状态才累加，防止旋转时高度追踪漂移
+            updown_angle += (float)ud_delta;
+        }
+        updown_last_raw = ud_raw;
+
+        float final_cur;
+        bool  counter_rotate;
+
+        if (fabs(ud_in) > 0.1f) {
+            // ch[2] 推杆：上下，两电机反向
+            final_cur = ud_in * rot_speed_scale;
+            updown_hold = updown_angle;
+            updown_int  = 0.0f;  // 运动时清零积分，防止保持时初始跳变
+            counter_rotate = true;
+        } else if (fabs(rot_in) > 0.1f) {
+            // ch[3] 推杆：旋转，两电机同向（不更新updown_hold，保持高度目标不变）
+            final_cur = rot_in * rot_speed_scale;
+            updown_int = 0.0f;
+            counter_rotate = false;
+        } else {
+            // 两杆中位：上下位置保持 PID（抵抗重力）
+            float pos_err = updown_hold - updown_angle;
+            float spd = (float)grip_rot_fb[GRIP_ROT_A].speed_rpm;
+            updown_int += pos_err * 1.0f;                  // 积分累加
+            if (updown_int >  2000.0f) updown_int =  2000.0f;
+            if (updown_int < -2000.0f) updown_int = -2000.0f;
+            final_cur = pos_err * 8.0f - spd * 1.0f + updown_int;
+            counter_rotate = true;
+        }
+
+        // 驱动时限 rot_max_cur，保持时允许更大电流抗重力（最高3000）
+        int16_t cur_limit = (fabs(ud_in) < 0.1f && fabs(rot_in) < 0.1f) ? 3000 : rot_max_cur;
+        if (final_cur >  cur_limit) final_cur =  cur_limit;
+        if (final_cur < -cur_limit) final_cur = -cur_limit;
+
+        // 转速保护：超速（跳齿后空转）时强制限流，防止高速打回齿痕
+        float cur_spd = fabs((float)grip_rot_fb[GRIP_ROT_A].speed_rpm);
+        if (cur_spd > rot_spd_limit) {
+            int16_t sign = (final_cur >= 0) ? 1 : -1;
+            if ((float)(sign) * (float)grip_rot_fb[GRIP_ROT_A].speed_rpm > 0) {
+                // 电流方向与转速同向（在加速）→ 强制刹车
+                final_cur = -(float)grip_rot_fb[GRIP_ROT_A].speed_rpm * rot_brake_gain;
+                if (final_cur >  rot_safe_cur) final_cur =  rot_safe_cur;
+                if (final_cur < -rot_safe_cur) final_cur = -rot_safe_cur;
+            }
+        }
+
+        if (counter_rotate)
+            grip_rot_set_current((int16_t)final_cur, -(int16_t)final_cur);
+        else
+            grip_rot_set_current((int16_t)final_cur,  (int16_t)final_cur);
     }
-
-    if (final_cur >  rot_max_cur) final_cur =  rot_max_cur;
-    if (final_cur < -rot_max_cur) final_cur = -rot_max_cur;
-
-    if (counter_rotate)
-        grip_rot_set_current((int16_t)final_cur, -(int16_t)final_cur);  // 上下/保持
-    else
-        grip_rot_set_current((int16_t)final_cur,  (int16_t)final_cur);  // 旋转
 
     last_s0 = s0;
     osDelay(2);
