@@ -54,7 +54,7 @@
 
 /* Private variables ---------------------------------------------------------*/
 /* USER CODE BEGIN Variables */
-
+volatile float g_servo_pulse = 1500.0f;  // 调试用全局变量，Watch窗口可实时查看
 /* USER CODE END Variables */
 /* Definitions for Init_TaskHandle */
 osThreadId_t Init_TaskHandleHandle;
@@ -102,7 +102,7 @@ const osThreadAttr_t Remote_TaskHand_attributes = {
 osThreadId_t Gimbal_TaskHandHandle;
 const osThreadAttr_t Gimbal_TaskHand_attributes = {
   .name = "Gimbal_TaskHand",
-  .stack_size = 2048 * 4,
+  .stack_size = 1024 * 4,
   .priority = (osPriority_t) osPriorityRealtime,
 };
 /* Definitions for Referee_TaskHa */
@@ -176,10 +176,10 @@ void MX_FREERTOS_Init(void) {
   Ins_TaskHandlerHandle = osThreadNew(Ins_Task, NULL, &Ins_TaskHandler_attributes);
 
   /* creation of WatchDog_TaskHa */
-  //WatchDog_TaskHaHandle = osThreadNew(WatchDog_Task, NULL, &WatchDog_TaskHa_attributes);
+  WatchDog_TaskHaHandle = osThreadNew(WatchDog_Task, NULL, &WatchDog_TaskHa_attributes);
 
   /* creation of Shoot_TaskHandl */
-  //Shoot_TaskHandlHandle = osThreadNew(Shoot_Task, NULL, &Shoot_TaskHandl_attributes);
+  Shoot_TaskHandlHandle = osThreadNew(Shoot_Task, NULL, &Shoot_TaskHandl_attributes);
 
   /* creation of Remote_TaskHand */
   Remote_TaskHandHandle = osThreadNew(Remote_Task, NULL, &Remote_TaskHand_attributes);
@@ -188,7 +188,7 @@ void MX_FREERTOS_Init(void) {
   Gimbal_TaskHandHandle = osThreadNew(Gimbal_Task, NULL, &Gimbal_TaskHand_attributes);
 
   /* creation of Referee_TaskHa */
-  //Referee_TaskHaHandle = osThreadNew(Referee_Task, NULL, &Referee_TaskHa_attributes);
+  Referee_TaskHaHandle = osThreadNew(Referee_Task, NULL, &Referee_TaskHa_attributes);
 
   /* USER CODE BEGIN RTOS_THREADS */
   /* add threads, ... */
@@ -322,6 +322,11 @@ __weak void Gimbal_Task(void *argument)
   // ====================== 初始化 ======================
   bsp_can_init();
   rc_init();
+
+  // 舵机：立即启动PWM并发送中位，防止AF引脚低电平导致舵机冲限位
+  HAL_TIM_PWM_Start(&htim1, TIM_CHANNEL_1);
+  __HAL_TIM_SET_COMPARE(&htim1, TIM_CHANNEL_1, 710);
+
   osDelay(100);
   dm_motor_init();
   osDelay(100);
@@ -367,11 +372,11 @@ __weak void Gimbal_Task(void *argument)
   const float gripper_hold_kd     =  2.0f;
   const float gripper_tor_limit   =  3.0f;
 
-  const float rot_speed_scale = 5.0f;   // 降低驱动力，减少跳齿概率
+  const float rot_speed_scale = 3.0f;   // 缩小比例，推满杆电流 ~2000，速度慢但稳
   const float rot_brake_gain  = 3.0f;
-  const int16_t rot_max_cur   = 2000;   // 降低峰值电流，保护齿轮
-  const float rot_spd_limit   = 200.0f; // rpm超过此值认为跳齿，强制刹车
-  const int16_t rot_safe_cur  = 300;    // 超速时最大允许电流
+  const int16_t rot_max_cur   = 4000;   // 驱动上限提高，保证能抬起重量
+  const float rot_spd_limit   = 150.0f; // 超速保护阈值（降低，防止抬重时加速过快）
+  const int16_t rot_safe_cur  = 500;    // 超速时刹车电流
 
   const int16_t RC_DEADZONE = 30;     // 死区加大，过滤零漂和噪声
   const float POS_LIMIT     = 12.0f;  // 位置安全限幅（PMAX=12.5）
@@ -386,6 +391,14 @@ __weak void Gimbal_Task(void *argument)
   uint8_t last_s0 = 0;
   uint8_t gripper_state = GRIPPER_HOLD;
   bool gripper_overcurrent = false;
+
+  #define SERVO_MIN     620    // 低头视角
+  #define SERVO_MAX     860    // 抬头视角
+  #define SERVO_CENTER  710    // 上电基准位置
+  #define SERVO_OFFSET  111     // 约10度对应脉宽偏移（us），待实测后修正
+  #define SERVO_STEP    2.0f    // 每帧步进（us），控制切换速度
+  float servo_pulse  = SERVO_CENTER;
+  float servo_target = SERVO_CENTER;
 
   // M2006 上下位置追踪
   float updown_angle    = 0.0f;
@@ -446,6 +459,19 @@ __weak void Gimbal_Task(void *argument)
     if (s0 == 1) {
         vel_m2 = -(float)ch[3] * 0.005f;
         vel_m3 = -(float)ch[1] * 0.005f;
+
+        // S[1] 三档控制图传舵机俯仰角度
+        // 调试阶段：s1=1持续增加脉宽，s1=2持续减小，找到合适位置后记录g_servo_pulse的值
+        if      (s1 == 1) servo_target += SERVO_STEP;   // 持续向一侧移动
+        else if (s1 == 2) servo_target -= SERVO_STEP;   // 持续向另一侧移动
+        // s1=3：保持当前位置不动
+
+        if (servo_target > SERVO_MAX) servo_target = SERVO_MAX;
+        if (servo_target < SERVO_MIN) servo_target = SERVO_MIN;
+
+        servo_pulse = servo_target;
+        g_servo_pulse = servo_pulse;  // 同步全局变量，供Watch窗口实时查看
+        __HAL_TIM_SET_COMPARE(&htim1, TIM_CHANNEL_1, (uint16_t)servo_pulse);
     }
     else if (s0 == 2) {
         vel_m1 = -(float)ch[0] * 0.008f;
@@ -572,17 +598,18 @@ __weak void Gimbal_Task(void *argument)
             counter_rotate = false;
         } else {
             // 两杆中位：上下位置保持 PID（抵抗重力）
+            // P低防震荡，D大压阻尼，I慢慢积累补偿重力
             float pos_err = updown_hold - updown_angle;
             float spd = (float)grip_rot_fb[GRIP_ROT_A].speed_rpm;
-            updown_int += pos_err * 1.0f;                  // 积分累加
-            if (updown_int >  2000.0f) updown_int =  2000.0f;
-            if (updown_int < -2000.0f) updown_int = -2000.0f;
-            final_cur = pos_err * 8.0f - spd * 1.0f + updown_int;
+            updown_int += pos_err * 2.0f;                  // 积分增益加大，更快补偿重力
+            if (updown_int >  4500.0f) updown_int =  4500.0f;
+            if (updown_int < -4500.0f) updown_int = -4500.0f;
+            final_cur = pos_err * 3.0f - spd * 5.0f + updown_int;
             counter_rotate = true;
         }
 
         // 驱动时限 rot_max_cur，保持时允许更大电流抗重力（最高3000）
-        int16_t cur_limit = (fabs(ud_in) < 0.1f && fabs(rot_in) < 0.1f) ? 3000 : rot_max_cur;
+        int16_t cur_limit = (fabs(ud_in) < 0.1f && fabs(rot_in) < 0.1f) ? 5000 : rot_max_cur;
         if (final_cur >  cur_limit) final_cur =  cur_limit;
         if (final_cur < -cur_limit) final_cur = -cur_limit;
 
