@@ -363,7 +363,7 @@ __weak void Gimbal_Task(void *argument)
   const float kp_m3 = 150.0f, kd_m3 = 5.0f;
 
   #define GRIPPER_HOLD    0
-  #define GRIPPER_CLAMP   1
+  #define GRIPPER_CLAMP   1                     
   #define GRIPPER_RELEASE 2
   const float gripper_clamp_vel   =  2.0f;
   const float gripper_release_vel = -2.0f;
@@ -392,8 +392,8 @@ __weak void Gimbal_Task(void *argument)
   uint8_t gripper_state = GRIPPER_HOLD;
   bool gripper_overcurrent = false;
 
-  #define SERVO_MIN     620    // 低头视角
-  #define SERVO_MAX     860    // 抬头视角
+  #define SERVO_MIN     550    //低头视角
+  #define SERVO_MAX     800    // 抬头视角
   #define SERVO_CENTER  710    // 上电基准位置
   #define SERVO_OFFSET  111     // 约10度对应脉宽偏移（us），待实测后修正
   #define SERVO_STEP    2.0f    // 每帧步进（us），控制切换速度
@@ -604,7 +604,7 @@ __weak void Gimbal_Task(void *argument)
             updown_int += pos_err * 2.0f;                  // 积分增益加大，更快补偿重力
             if (updown_int >  4500.0f) updown_int =  4500.0f;
             if (updown_int < -4500.0f) updown_int = -4500.0f;
-            final_cur = pos_err * 3.0f - spd * 5.0f + updown_int;
+            final_cur = pos_err * 4.0f - spd * 5.0f + updown_int;
             counter_rotate = true;
         }
 
