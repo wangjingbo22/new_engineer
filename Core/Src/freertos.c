@@ -536,7 +536,7 @@ __weak void Gimbal_Task(void *argument)
     if (s0 != 2) {
         grip_rot_set_current(0, 0);
     } else {
-        float rot_cur = (float)ch[3] * 2.5f;   // 旋转
+        float rot_cur = (float)ch[3] * 2.0f;   // 旋转
         float ud_cur  = (float)ch[2] * 0.0f ;  // 上下
 
         float cur_A = rot_cur + ud_cur;
