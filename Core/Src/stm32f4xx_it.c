@@ -377,7 +377,8 @@ void rx_callback(void)
   if(__HAL_UART_GET_FLAG(&huart3, UART_FLAG_IDLE) && __HAL_UART_GET_IT_SOURCE(&huart3, UART_IT_IDLE))
   {
       __HAL_UART_CLEAR_FLAG(&huart3, UART_IT_IDLE);
-      rc_processdata((uint8_t*)huart3.pRxBuffPtr);
+      rc_processdata(rxBuff);
+      huart3.hdmarx->Instance->M0AR = (uint32_t)rxBuff;  // 重置内存地址到 buffer 起始
       __HAL_DMA_SET_COUNTER(huart3.hdmarx, 54);
       __HAL_DMA_ENABLE(huart3.hdmarx);
   }

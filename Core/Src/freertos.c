@@ -394,6 +394,14 @@ __weak void Gimbal_Task(void *argument)
   float servo_pulse  = SERVO_CENTER;
   float servo_target = SERVO_CENTER;
 
+  // ---- 键鼠灵敏度常数（参考infantry_master，按需调整）----
+  #define MOUSE_DEADZONE      8       // 鼠标死区，过滤手抖
+  #define MOUSE_ROT_GAIN      6.0f    // 鼠标X → M2006旋转电流系数
+  #define MOUSE_SERVO_GAIN    0.05f   // 鼠标Y → 图传舵机步进（us/count）
+  #define KB_CHASSIS_SPEED    3000.0f // WASD底盘速度
+  #define KB_CHASSIS_BOOST    5000.0f // Shift加速
+  #define KB_CHASSIS_ROT      2000.0f // Z/X旋转速度
+
   // RC 滤波（上一帧有效值）
   int16_t ch_prev[4] = {0, 0, 0, 0};
 
@@ -438,7 +446,57 @@ __weak void Gimbal_Task(void *argument)
     // -------- 3. 模式分发 --------
     float vel_m1 = 0, vel_m2 = 0, vel_m3 = 0;
 
-    if (s0 == 1) {
+    // 键鼠模式：s[0]=3 且 s[1]=3 时激活
+    bool kb_mode = (s0 == 3 && s1 == 3);
+
+    if (kb_mode) {
+        // 底盘：W/S控制左右平移，A/D控制前后，Z/X旋转，Shift加速
+        float spd = rc.key.shift ? KB_CHASSIS_BOOST : KB_CHASSIS_SPEED;
+        float vx  = (rc.key.d ? spd : 0) - (rc.key.a ? spd : 0);   // D前 A后
+        float vy  = (rc.key.s ? spd : 0) - (rc.key.w ? spd : 0);   // S左 W右
+        float wz  = (rc.key.z ? KB_CHASSIS_ROT : 0) - (rc.key.x ? KB_CHASSIS_ROT : 0);
+        if (vx != 0 || vy != 0 || wz != 0)
+            chassis_mecanum_calc(vx, vy, wz, KB_CHASSIS_BOOST);
+        else
+            chassis_set_current(0, 0, 0, 0);
+
+        // 图传舵机：鼠标Y反向累加
+        if (rc.mouse.y > MOUSE_DEADZONE || rc.mouse.y < -MOUSE_DEADZONE)
+            servo_target += (float)rc.mouse.y * MOUSE_SERVO_GAIN;  // 反向：去掉负号
+        if (servo_target > SERVO_MAX) servo_target = SERVO_MAX;
+        if (servo_target < SERVO_MIN) servo_target = SERVO_MIN;
+        servo_pulse = servo_target;
+        g_servo_pulse = servo_pulse;
+        __HAL_TIM_SET_COMPARE(&htim1, TIM_CHANNEL_1, (uint16_t)servo_pulse);
+
+        // M1 大臂旋转：Q正转 / E反转
+        vel_m1 = (rc.key.q ? 1.0f : 0) - (rc.key.e ? 1.0f : 0);
+
+        // Motor2（大臂pitch）：R正 / F负，速度对齐遥控器通道量级
+        vel_m2 = (rc.key.f ? 1.0f : 0) - (rc.key.r ? 1.0f : 0);
+        // Motor3（小臂pitch）：G正 / B负
+        vel_m3 = (rc.key.b ? 1.0f : 0) - (rc.key.g ? 1.0f : 0);
+
+        // 夹爪 DM：左键抓 / 右键放
+        uint8_t desired = GRIPPER_HOLD;
+        if (rc.mouse.l) desired = GRIPPER_CLAMP;
+        else if (rc.mouse.r) desired = GRIPPER_RELEASE;
+        if (gripper_overcurrent) {
+            if (desired == GRIPPER_HOLD) gripper_overcurrent = false;
+            desired = GRIPPER_HOLD;
+        }
+        if (desired != gripper_state) {
+            if (desired == GRIPPER_HOLD) gripper_hold_pos = motor[Motor4].para.pos;
+            gripper_state = desired;
+        }
+        if ((gripper_state == GRIPPER_CLAMP || gripper_state == GRIPPER_RELEASE) &&
+            fabs(motor[Motor4].para.tor) > gripper_tor_limit) {
+            gripper_hold_pos = motor[Motor4].para.pos;
+            gripper_state = GRIPPER_HOLD;
+            gripper_overcurrent = true;
+        }
+    }
+    else if (s0 == 1) {
         vel_m2 = -(float)ch[3] * 0.005f;
         vel_m3 = -(float)ch[1] * 0.005f;
 
@@ -477,7 +535,7 @@ __weak void Gimbal_Task(void *argument)
             gripper_overcurrent = true;
         }
     }
-    else if (s0 == 3) {
+    else if (s0 == 3) {  // s1!=3，普通底盘档
         if (gripper_state != GRIPPER_HOLD) {
             gripper_hold_pos = motor[Motor4].para.pos;
             gripper_state = GRIPPER_HOLD;
@@ -489,7 +547,7 @@ __weak void Gimbal_Task(void *argument)
             5000.0f);
     }
 
-    if (s0 != 3) chassis_set_current(0, 0, 0, 0);
+    if (!kb_mode && s0 != 3) chassis_set_current(0, 0, 0, 0);
 
     // -------- 4. 位置积分 + 限幅 --------
     pos_ref_m1 += vel_m1 * 0.002f;
@@ -531,21 +589,29 @@ __weak void Gimbal_Task(void *argument)
         mit_ctrl(&hcan1, &motor[Motor4], motor[Motor4].id,
                  gripper_hold_pos, 0, gripper_hold_kp, gripper_hold_kd, 0);
 
-    // -------- 7. M2006 夹爪旋转(ch3) / 上下(ch2) --------
+    // -------- 7. M2006 夹爪旋转(rot) / 上下(ud) --------
     // 叠加控制：A = rot + ud，B = rot - ud
-    if (s0 != 2) {
+    // 键鼠模式：鼠标X反向→旋转（带死区），无上下
+    // 遥控器模式：ch[3]→旋转，ch[2]→上下
+    if (!kb_mode && s0 != 2) {
         grip_rot_set_current(0, 0);
     } else {
-        float rot_cur = (float)ch[3] * 2.0f;   // 旋转
-        float ud_cur  = (float)ch[2] * 0.0f ;  // 上下
-
+        float rot_cur, ud_cur;
+        if (kb_mode) {
+            int16_t mx = rc.mouse.x;
+            rot_cur = (mx > MOUSE_DEADZONE || mx < -MOUSE_DEADZONE) ?
+                      -(float)mx * MOUSE_ROT_GAIN : 0.0f;  // 反向：加负号
+            ud_cur  = 0.0f;
+        } else {
+            rot_cur = (float)ch[3] * 2.0f;
+            ud_cur  = (float)ch[2] * 0.0f;
+        }
         float cur_A = rot_cur + ud_cur;
         float cur_B = rot_cur - ud_cur;
         if (cur_A >  8000.0f) cur_A =  8000.0f;
         if (cur_A < -8000.0f) cur_A = -8000.0f;
         if (cur_B >  8000.0f) cur_B =  8000.0f;
         if (cur_B < -8000.0f) cur_B = -8000.0f;
-
         grip_rot_set_current((int16_t)cur_A, (int16_t)cur_B);
     }
 
