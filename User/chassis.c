@@ -71,19 +71,19 @@ void grip_rot_set_current(int16_t mot_a, int16_t mot_b)
 
 /**
  * @brief  麦克纳姆轮全向运动解算
- *
- *   LF(1)\  /RF(2)
+ * 
+ *    LF(1)\  /RF(2)
  *          \/
  *          /\
- *   LR(4)/  \RR(3)
+ *    LR(3)/  \RR(4)
  */
 void chassis_mecanum_calc(float vx, float vy, float wz, float speed_max)
 {
     float wheel[4];
-    wheel[CHASSIS_LF] = vx - vy - wz;
-    wheel[CHASSIS_RF] = vx + vy + wz;
-    wheel[CHASSIS_LR] = vx + vy - wz;
-    wheel[CHASSIS_RR] = vx - vy + wz;
+    wheel[CHASSIS_LF] =  (vx - vy - wz);   // Motor1: 正装
+    wheel[CHASSIS_RF] = -(vx + vy + wz);   // Motor2: 反装，取反
+    wheel[CHASSIS_LR] = -(vx - vy + wz);   // Motor4: 反装，取反
+    wheel[CHASSIS_RR] =  (vx + vy - wz);   // Motor3: 正装
 
     float max_val = 0;
     for (int i = 0; i < 4; i++) {

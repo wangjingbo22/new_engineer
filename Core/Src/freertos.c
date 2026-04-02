@@ -386,9 +386,7 @@ __weak void Gimbal_Task(void *argument)
   uint8_t gripper_state = GRIPPER_HOLD;
   bool gripper_overcurrent = false;
 
-  #define SERVO_MIN     550    //低头视角
-  #define SERVO_MAX     800    // 抬头视角
-  #define SERVO_CENTER  710    // 上电基准位置
+  #define SERVO_CENTER  510    // 上电基准位置
   #define SERVO_OFFSET  111     // 约10度对应脉宽偏移（us），待实测后修正
   #define SERVO_STEP    2.0f    // 每帧步进（us），控制切换速度
   float servo_pulse  = SERVO_CENTER;
@@ -397,7 +395,7 @@ __weak void Gimbal_Task(void *argument)
   // ---- 键鼠灵敏度常数（参考infantry_master，按需调整）----
   #define MOUSE_DEADZONE      8       // 鼠标死区，过滤手抖
   #define MOUSE_ROT_GAIN      6.0f    // 鼠标X → M2006旋转电流系数
-  #define MOUSE_SERVO_GAIN    0.05f   // 鼠标Y → 图传舵机步进（us/count）
+  #define MOUSE_SERVO_GAIN    0.02f   // 鼠标Y → 图传舵机步进（us/count）
   #define KB_CHASSIS_SPEED    3000.0f // WASD底盘速度
   #define KB_CHASSIS_BOOST    5000.0f // Shift加速
   #define KB_CHASSIS_ROT      2000.0f // Z/X旋转速度
@@ -450,11 +448,11 @@ __weak void Gimbal_Task(void *argument)
     bool kb_mode = (s0 == 3 && s1 == 3);
 
     if (kb_mode) {
-        // 底盘：W/S控制左右平移，A/D控制前后，Z/X旋转，Shift加速
+        // 底盘：W前S后，A左平移D右平移，Z左旋转X右旋转，Shift加速
         float spd = rc.key.shift ? KB_CHASSIS_BOOST : KB_CHASSIS_SPEED;
-        float vx  = (rc.key.d ? spd : 0) - (rc.key.a ? spd : 0);   // D前 A后
-        float vy  = (rc.key.s ? spd : 0) - (rc.key.w ? spd : 0);   // S左 W右
-        float wz  = (rc.key.z ? KB_CHASSIS_ROT : 0) - (rc.key.x ? KB_CHASSIS_ROT : 0);
+        float vx  = (rc.key.w ? spd : 0) - (rc.key.s ? spd : 0);   // W前 S后
+        float vy  = (rc.key.a ? spd : 0) - (rc.key.d ? spd : 0);   // A左平移 D右平移
+        float wz  = (rc.key.z ? KB_CHASSIS_ROT : 0) - (rc.key.x ? KB_CHASSIS_ROT : 0);  // Z左旋 X右旋
         if (vx != 0 || vy != 0 || wz != 0)
             chassis_mecanum_calc(vx, vy, wz, KB_CHASSIS_BOOST);
         else
@@ -463,8 +461,6 @@ __weak void Gimbal_Task(void *argument)
         // 图传舵机：鼠标Y反向累加
         if (rc.mouse.y > MOUSE_DEADZONE || rc.mouse.y < -MOUSE_DEADZONE)
             servo_target += (float)rc.mouse.y * MOUSE_SERVO_GAIN;  // 反向：去掉负号
-        if (servo_target > SERVO_MAX) servo_target = SERVO_MAX;
-        if (servo_target < SERVO_MIN) servo_target = SERVO_MIN;
         servo_pulse = servo_target;
         g_servo_pulse = servo_pulse;
         __HAL_TIM_SET_COMPARE(&htim1, TIM_CHANNEL_1, (uint16_t)servo_pulse);
@@ -506,9 +502,6 @@ __weak void Gimbal_Task(void *argument)
         else if (s1 == 2) servo_target -= SERVO_STEP;   // 持续向另一侧移动
         // s1=3：保持当前位置不动
 
-        if (servo_target > SERVO_MAX) servo_target = SERVO_MAX;
-        if (servo_target < SERVO_MIN) servo_target = SERVO_MIN;
-
         servo_pulse = servo_target;
         g_servo_pulse = servo_pulse;  // 同步全局变量，供Watch窗口实时查看
         __HAL_TIM_SET_COMPARE(&htim1, TIM_CHANNEL_1, (uint16_t)servo_pulse);
@@ -526,7 +519,7 @@ __weak void Gimbal_Task(void *argument)
         }
         if (desired != gripper_state) {
             if (desired == GRIPPER_HOLD) gripper_hold_pos = motor[Motor4].para.pos;
-            gripper_state = desired;
+            gripper_state = desired; 
         }
         if ((gripper_state == GRIPPER_CLAMP || gripper_state == GRIPPER_RELEASE) &&
             fabs(motor[Motor4].para.tor) > gripper_tor_limit) {
@@ -541,9 +534,9 @@ __weak void Gimbal_Task(void *argument)
             gripper_state = GRIPPER_HOLD;
         }
         chassis_mecanum_calc(
-            (float)ch[2] * 10.0f,    // vx 前后
-            (float)ch[1] * 10.0f,    // vy 平移
-            (float)ch[0] * 8.0f,     // wz 旋转
+            (float)ch[1] * 10.0f,    // vx 前后（上拨=前进）
+            -(float)ch[0] * 10.0f,   // vy 平移（左拨=左平移）
+            -(float)ch[2] * 8.0f,    // wz 旋转（右拨=顺时针）
             5000.0f);
     }
 
@@ -591,20 +584,20 @@ __weak void Gimbal_Task(void *argument)
 
     // -------- 7. M2006 夹爪旋转(rot) / 上下(ud) --------
     // 叠加控制：A = rot + ud，B = rot - ud
-    // 键鼠模式：鼠标X反向→旋转（带死区），无上下
+    // 键鼠模式：鼠标X→旋转（带死区），C上/V下
     // 遥控器模式：ch[3]→旋转，ch[2]→上下
     if (!kb_mode && s0 != 2) {
-        grip_rot_set_current(0, 0);
+        grip_rot_set_current(0, 0);                                        
     } else {
         float rot_cur, ud_cur;
         if (kb_mode) {
             int16_t mx = rc.mouse.x;
             rot_cur = (mx > MOUSE_DEADZONE || mx < -MOUSE_DEADZONE) ?
                       -(float)mx * MOUSE_ROT_GAIN : 0.0f;  // 反向：加负号
-            ud_cur  = 0.0f;
+            ud_cur  = (rc.key.c ? 3500.0f : 0) - (rc.key.v ? 3500.0f : 0);  // C上 V下
         } else {
-            rot_cur = (float)ch[3] * 2.0f;
-            ud_cur  = (float)ch[2] * 0.0f;
+            rot_cur = (float)ch[3] * 3.5f;
+            ud_cur  = (float)ch[2] * 5.0f;
         }
         float cur_A = rot_cur + ud_cur;
         float cur_B = rot_cur - ud_cur;
