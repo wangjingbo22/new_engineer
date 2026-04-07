@@ -382,13 +382,21 @@ __weak void Gimbal_Task(void *argument)
   float gripper_hold_pos = motor[Motor4].para.pos;
   float int_m2 = 0.0f, int_m3 = 0.0f;
 
+  // 上线同步：记录上一帧各电机的使能状态，检测 0→非0 跳变
+  uint8_t prev_state_m1 = motor[Motor1].para.state;
+  uint8_t prev_state_m2 = motor[Motor2].para.state;
+  uint8_t prev_state_m3 = motor[Motor3].para.state;
+  uint8_t prev_state_m4 = motor[Motor4].para.state;
+
   uint8_t last_s0 = 0;
   uint8_t gripper_state = GRIPPER_HOLD;
   bool gripper_overcurrent = false;
 
-  #define SERVO_CENTER  510    // 上电基准位置
+  #define SERVO_CENTER  1150.0f    // 上电基准位置
   #define SERVO_OFFSET  111     // 约10度对应脉宽偏移（us），待实测后修正
   #define SERVO_STEP    2.0f    // 每帧步进（us），控制切换速度
+  #define SERVO_MIN     700.0f  // 舵机最小脉宽（根据实际行程调整）
+  #define SERVO_MAX     1250.0f  // 舵机最大脉宽（根据实际行程调整）
   float servo_pulse  = SERVO_CENTER;
   float servo_target = SERVO_CENTER;
 
@@ -406,6 +414,24 @@ __weak void Gimbal_Task(void *argument)
   // ====================== 主循环 500Hz 直接发送 ======================
   for (;;)
   {
+    // -------- 0. 电机上线检测：state 0→非0 时同步 pos_ref，防止突转 --------
+    if (prev_state_m1 == 0 && motor[Motor1].para.state != 0)
+        pos_ref_m1 = motor[Motor1].para.pos;
+    if (prev_state_m2 == 0 && motor[Motor2].para.state != 0) {
+        pos_ref_m2 = motor[Motor2].para.pos;
+        int_m2 = 0.0f;
+    }
+    if (prev_state_m3 == 0 && motor[Motor3].para.state != 0) {
+        pos_ref_m3 = motor[Motor3].para.pos;
+        int_m3 = 0.0f;
+    }
+    if (prev_state_m4 == 0 && motor[Motor4].para.state != 0)
+        gripper_hold_pos = motor[Motor4].para.pos;
+    prev_state_m1 = motor[Motor1].para.state;
+    prev_state_m2 = motor[Motor2].para.state;
+    prev_state_m3 = motor[Motor3].para.state;
+    prev_state_m4 = motor[Motor4].para.state;
+
     // -------- 1. RC 采集 + 校验 + 滤波 --------
     uint8_t s0 = rc.s[0];
     uint8_t s1 = rc.s[1];
@@ -448,19 +474,19 @@ __weak void Gimbal_Task(void *argument)
     bool kb_mode = (s0 == 3 && s1 == 3);
 
     if (kb_mode) {
-        // 底盘：W前S后，A左平移D右平移，Z左旋转X右旋转，Shift加速
-        float spd = rc.key.shift ? KB_CHASSIS_BOOST : KB_CHASSIS_SPEED;
-        float vx  = (rc.key.w ? spd : 0) - (rc.key.s ? spd : 0);   // W前 S后
-        float vy  = (rc.key.a ? spd : 0) - (rc.key.d ? spd : 0);   // A左平移 D右平移
+        // 底盘：W前S后，A左平移D右平移，Z左旋转X右旋转
+        float vx  = (rc.key.w ? KB_CHASSIS_SPEED : 0) - (rc.key.s ? KB_CHASSIS_SPEED : 0);   // W前 S后
+        float vy  = (rc.key.a ? KB_CHASSIS_SPEED : 0) - (rc.key.d ? KB_CHASSIS_SPEED : 0);   // A左平移 D右平移
         float wz  = (rc.key.z ? KB_CHASSIS_ROT : 0) - (rc.key.x ? KB_CHASSIS_ROT : 0);  // Z左旋 X右旋
         if (vx != 0 || vy != 0 || wz != 0)
-            chassis_mecanum_calc(vx, vy, wz, KB_CHASSIS_BOOST);
+            chassis_mecanum_calc(vx, vy, wz, KB_CHASSIS_SPEED);
         else
             chassis_set_current(0, 0, 0, 0);
 
-        // 图传舵机：鼠标Y反向累加
-        if (rc.mouse.y > MOUSE_DEADZONE || rc.mouse.y < -MOUSE_DEADZONE)
-            servo_target += (float)rc.mouse.y * MOUSE_SERVO_GAIN;  // 反向：去掉负号
+        // 图传舵机：Shift抬高 / Ctrl压低
+        servo_target += (rc.key.shift ? SERVO_STEP : 0) - (rc.key.ctrl ? SERVO_STEP : 0);
+        if (servo_target > SERVO_MAX) servo_target = SERVO_MAX;
+        if (servo_target < SERVO_MIN) servo_target = SERVO_MIN;
         servo_pulse = servo_target;
         g_servo_pulse = servo_pulse;
         __HAL_TIM_SET_COMPARE(&htim1, TIM_CHANNEL_1, (uint16_t)servo_pulse);
@@ -501,6 +527,8 @@ __weak void Gimbal_Task(void *argument)
         if      (s1 == 1) servo_target += SERVO_STEP;   // 持续向一侧移动
         else if (s1 == 2) servo_target -= SERVO_STEP;   // 持续向另一侧移动
         // s1=3：保持当前位置不动
+        if (servo_target > SERVO_MAX) servo_target = SERVO_MAX;
+        if (servo_target < SERVO_MIN) servo_target = SERVO_MIN;
 
         servo_pulse = servo_target;
         g_servo_pulse = servo_pulse;  // 同步全局变量，供Watch窗口实时查看
@@ -608,7 +636,21 @@ __weak void Gimbal_Task(void *argument)
         grip_rot_set_current((int16_t)cur_A, (int16_t)cur_B);
     }
 
+    // -------- 8. 掉线检测：电机未使能则重新使能 --------
+    static uint32_t re_enable_cnt = 0;
+    if (++re_enable_cnt >= 500) {  // 每 1s 检查一次（2ms × 500）
+        re_enable_cnt = 0;
+        for (int i = 0; i < num; i++) {
+            if ((motor[i].id == 0x01 || motor[i].id == 0x04 ||
+                 motor[i].id == 0x07 || motor[i].id == 0x0A) &&
+                motor[i].para.state == 0) {
+                dm_motor_enable(&hcan1, &motor[i]);
+            }
+        }
+    }
+
     last_s0 = s0;
+
     osDelay(2);
   }
   /* USER CODE END Gimbal_Task */
